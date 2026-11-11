@@ -8,6 +8,12 @@ const root = new URL('..', import.meta.url).pathname;
 const dist = join(root, 'dist');
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'));
 
+// Chrome Web Store limits: the upload is refused if these are longer.
+for (const [field, max] of [['name', 75], ['short_name', 12], ['description', 132]]) {
+  const len = (manifest[field] || '').length;
+  if (len > max) { console.error(`manifest.${field} is ${len} characters; the Chrome Web Store allows at most ${max}.`); process.exit(1); }
+}
+
 const files = {};
 (function walk(dir) {
   for (const name of readdirSync(dir)) {

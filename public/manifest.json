@@ -3,7 +3,7 @@
   "name": "Pagelore – AI side panel with your own model",
   "short_name": "Pagelore",
   "version": "0.3.0",
-  "description": "A private AI assistant in the side panel: summarize pages, ask questions, search, fill forms and run tasks with a model on your computer (Ollama, LM Studio) or any OpenAI-compatible API.",
+  "description": "AI in the side panel with your own model (Ollama, LM Studio or an API): ask, summarize, search, fill forms and run tasks.",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",

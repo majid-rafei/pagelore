@@ -10,7 +10,7 @@ Upload file: `release/pagelore-<version>.zip` (created by `npm run package`).
 
 **Name** (from the manifest): Pagelore – AI side panel with your own model
 
-**Summary** (max 132 characters):
+**Summary** (max 132 characters; the store takes it from `description` in the manifest, so keep both the same):
 
 > AI in the side panel with your own model (Ollama, LM Studio or an API): ask, summarize, search, fill forms and run tasks.
 
