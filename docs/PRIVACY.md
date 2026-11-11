@@ -1,8 +1,8 @@
-# Privacy Policy — Local AI Browser Assistant
+# Privacy Policy — Pagelore
 
 _Last updated: 11 November 2026_
 
-Local AI Browser Assistant ("the extension") is an AI assistant in Chrome's side panel. It contains no AI model of its own: you choose the model it uses, either one that runs on your own computer (for example with Ollama or LM Studio) or one offered by an online provider through an OpenAI-compatible API. The extension has no server, no account and no analytics. This policy explains what the extension reads, where that data goes, and what it stores.
+Pagelore ("the extension") is an AI assistant in Chrome's side panel. It contains no AI model of its own: you choose the model it uses, either one that runs on your own computer (for example with Ollama or LM Studio) or one offered by an online provider through an OpenAI-compatible API. The extension has no server, no account and no analytics. This policy explains what the extension reads, where that data goes, and what it stores.
 
 ## Summary
 
@@ -60,4 +60,4 @@ If this policy changes, the updated version will be published at this address wi
 
 ## Contact
 
-Questions about this policy: open an issue at <https://github.com/majid-rafei/local-ai-browser-assistant/issues>.
+Questions about this policy: open an issue at <https://github.com/majid-rafei/pagelore/issues>.

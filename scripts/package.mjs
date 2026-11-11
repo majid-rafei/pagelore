@@ -19,7 +19,7 @@ const files = {};
   }
 })(dist);
 
-const out = join(root, 'release', `local-ai-assistant-${manifest.version}.zip`);
+const out = join(root, 'release', `pagelore-${manifest.version}.zip`);
 mkdirSync(join(root, 'release'), { recursive: true });
 const zip = zipSync(files);
 writeFileSync(out, zip);

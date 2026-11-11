@@ -1,14 +1,14 @@
-# Chrome Web Store submission — Local AI Browser Assistant
+# Chrome Web Store submission — Pagelore
 
 Copy-ready text for the Chrome Web Store Developer Dashboard. Replace the items in `<angle brackets>`.
 
-Upload file: `release/local-ai-assistant-<version>.zip` (created by `npm run package`).
+Upload file: `release/pagelore-<version>.zip` (created by `npm run package`).
 
 ---
 
 ## Store listing tab
 
-**Name** (from the manifest): Local AI Browser Assistant
+**Name** (from the manifest): Pagelore – AI side panel with your own model
 
 **Summary** (max 132 characters):
 
@@ -21,7 +21,7 @@ Upload file: `release/local-ai-assistant-<version>.zip` (created by `npm run pac
 **Detailed description:**
 
 ```
-Local AI Browser Assistant puts an AI assistant in Chrome's side panel that works with the page you are viewing. It uses the model you choose: one running on your own computer with Ollama or LM Studio, so your pages and documents never leave your device, or any online model with an OpenAI-compatible API. There is no developer server, no account and no tracking.
+Pagelore puts an AI assistant in Chrome's side panel that works with the page you are viewing. It uses the model you choose: one running on your own computer with Ollama or LM Studio, so your pages and documents never leave your device, or any online model with an OpenAI-compatible API. There is no developer server, no account and no tracking.
 
 WHAT IT DOES
 • Chat – ask questions about the page and get answers with sources you can highlight on the page, or describe a task ("find a 14-inch laptop under 900 euros and compare the best three"): the assistant plans, searches the site, reads pages, clicks and types. Risky steps such as submitting, paying or deleting always ask for confirmation.
@@ -52,8 +52,8 @@ AI models can make mistakes. Check important answers against the source, which i
 - Small promo tile 440×280: `promo-small-440x280.png`
 - Marquee promo tile 1400×560: `promo-marquee-1400x560.png`
 
-**Official URL / Homepage:** https://github.com/majid-rafei/local-ai-browser-assistant
-**Support URL:** https://github.com/majid-rafei/local-ai-browser-assistant/issues
+**Official URL / Homepage:** https://github.com/majid-rafei/pagelore
+**Support URL:** https://github.com/majid-rafei/pagelore/issues
 
 ---
 
@@ -99,7 +99,7 @@ Why tick them although the developer receives nothing: the store counts data sen
 - I do not use or transfer user data for purposes that are unrelated to my item's single purpose.
 - I do not use or transfer user data to determine creditworthiness or for lending purposes.
 
-**Privacy policy URL:** https://github.com/majid-rafei/local-ai-browser-assistant/blob/main/docs/PRIVACY.md
+**Privacy policy URL:** https://github.com/majid-rafei/pagelore/blob/main/docs/PRIVACY.md
 
 ---
 

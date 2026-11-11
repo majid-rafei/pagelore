@@ -1,6 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Local AI Browser Assistant",
+  "name": "Pagelore – AI side panel with your own model",
+  "short_name": "Pagelore",
   "version": "0.3.0",
   "description": "A private AI assistant in the side panel: summarize pages, ask questions, search, fill forms and run tasks with a model on your computer (Ollama, LM Studio) or any OpenAI-compatible API.",
   "minimum_chrome_version": "116",
@@ -27,7 +28,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "Open Local AI Assistant",
+    "default_title": "Open Pagelore",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",

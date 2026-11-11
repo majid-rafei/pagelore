@@ -1,4 +1,4 @@
-Third-party software included in Local AI Browser Assistant
+Third-party software included in Pagelore
 ============================================================
 
 No AI model is included: the extension uses the models the user sets up (Ollama, LM Studio or an API).

@@ -1,5 +1,5 @@
 {
-  "name": "local-ai-chrome-assistant",
+  "name": "pagelore",
   "private": true,
   "version": "0.3.0",
   "description": "AI assistant in Chrome's side panel with your own model (Ollama, LM Studio or any OpenAI-compatible API)",
@@ -7,11 +7,11 @@
   "author": "Majid Rafei",
   "repository": {
     "type": "git",
-    "url": "https://github.com/majid-rafei/local-ai-browser-assistant.git"
+    "url": "https://github.com/majid-rafei/pagelore.git"
   },
-  "homepage": "https://github.com/majid-rafei/local-ai-browser-assistant#readme",
+  "homepage": "https://github.com/majid-rafei/pagelore#readme",
   "bugs": {
-    "url": "https://github.com/majid-rafei/local-ai-browser-assistant/issues"
+    "url": "https://github.com/majid-rafei/pagelore/issues"
   },
   "type": "module",
   "scripts": {

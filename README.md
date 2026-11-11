@@ -1,6 +1,6 @@
 <h1 align="center">
   <img src="public/icons/icon-128.png" width="72" alt=""><br>
-  Local AI Browser Assistant
+  Pagelore
 </h1>
 
 <p align="center">
@@ -162,7 +162,7 @@ Versions before 0.3 ran Qwen3.5 in the browser (Transformers.js). That is gone, 
 ## Publishing (Chrome Web Store)
 
 ```bash
-npm run package      # writes public/THIRD_PARTY_NOTICES.txt, builds, and zips dist/ → release/local-ai-assistant-<version>.zip
+npm run package      # writes public/THIRD_PARTY_NOTICES.txt, builds, and zips dist/ → release/pagelore-<version>.zip
 npm run icons        # regenerate public/icons/*.png (needs Python + Pillow)
 ```
 

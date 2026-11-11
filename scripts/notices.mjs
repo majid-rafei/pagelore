@@ -11,7 +11,7 @@ const BUNDLED = [
 
 const pkgDir = (name) => [join(root, 'node_modules', name)].find((d) => existsSync(join(d, 'package.json')));
 
-let out = 'Third-party software included in Local AI Browser Assistant\n' +
+let out = 'Third-party software included in Pagelore\n' +
   '============================================================\n\n' +
   'No AI model is included: the extension uses the models the user sets up (Ollama, LM Studio or an API).\n\n';
 for (const [name, url, inlineLicense, sameAs] of BUNDLED) {
