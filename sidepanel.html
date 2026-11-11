@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local AI Assistant</title>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="brand">
+        <span class="logo">✳</span>
+        <div><h1>Local AI Assistant</h1><p>Private · Your own model</p></div>
+      </div>
+      <div class="header-right">
+        <button id="modelState" class="status" title="The model of this tab. Click to change it.">Model not loaded</button>
+        <button id="openSettings" class="icon-btn" title="Settings: model, answers, agent, API models" aria-label="Settings">⚙</button>
+        <button id="restartPanel" class="icon-btn" title="Restart: reload this panel (use it when something is stuck)" aria-label="Restart">↻</button>
+      </div>
+    </header>
+
+    <div id="settingsView" class="settings-view hidden">
+      <div class="view-head">
+        <button id="closeSettings" class="text-button" title="Back to the panel">← Back</button>
+        <h2>Settings</h2>
+      </div>
+      <section class="card">
+        <h3>Model of this tab</h3>
+      <div class="row">
+        <select id="modelSelect" aria-label="Model"></select>
+      </div>
+      <label id="reasoningRow" class="inline reasoning" title="How much the model thinks before it answers. More reasoning is often more accurate on hard tasks, but slower and uses more tokens (cost). Only this tab uses this choice.">Reasoning
+        <select id="reasoningSelect">
+          <option value="default">Model default</option>
+          <option value="off">Off · faster, cheaper</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High · slower, more tokens</option>
+        </select>
+      </label>
+      <p id="modelHint" class="hint">The models you added under Models. Only this tab uses the choice; new tabs start with the last one chosen.</p>
+      <p id="apiNote" class="hint api-note hidden"></p>
+      </section>
+      <section class="card">
+        <h3>Answers</h3>
+      <label class="inline">Answer language
+        <select id="langSelect">
+          <option value="auto">Auto (same as the question or page)</option>
+        </select>
+      </label>
+      <label class="inline">Writing style
+        <select id="styleSelect"></select>
+      </label>
+      <textarea id="styleCustom" class="hidden" rows="3" maxlength="500"
+        placeholder="Describe the style, e.g. “Friendly and short, simple words, no exclamation marks.”"></textarea>
+      <p class="hint">Used when the model writes text: form fields, answers and summaries.</p>
+      <label class="check"><input type="checkbox" id="verifyWritten" /> Check written form texts against my info (one more request per text)</label>
+      <label class="check"><input type="checkbox" id="logModelCalls" /> Keep a log of the model's requests and replies</label>
+      <p class="hint">Every message sent to the model (as sent, with the tool list) and its reply. A “Download model log” button under the answer saves it as a text file. The log stays in this panel only: it is cleared by “New chat” or when the panel closes, and it never contains API keys.</p>
+      </section>
+      <section class="card">
+        <h3>Agent</h3>
+      <label class="inline">Pause between page loads
+        <select id="agentPace">
+          <option value="2">2 seconds</option>
+          <option value="3">3 seconds</option>
+          <option value="5">5 seconds</option>
+          <option value="10">10 seconds</option>
+        </select>
+      </label>
+      <p class="hint">The agent opens pages at most this often, to keep the load on websites low.</p>
+      <label class="inline">Compact its memory above
+        <input id="compactAt" class="wide-number" type="number" min="0" step="1000" placeholder="200000" /> tokens
+      </label>
+      <p class="hint">In a long task or chat the agent's requests grow (its log, notes and the earlier conversation). When a request would be larger than this, one extra request first summarizes the older part, so the next requests are smaller and cheaper. The latest steps, the plan and the saved results are kept as they are. 0 turns it off; smaller values (for example 16000) make long tasks cheaper but summarize sooner.</p>
+      </section>
+      <section class="card api-models">
+        <h3>Models</h3>
+          <p class="hint">Any server with an OpenAI-compatible API (…/v1/chat/completions): a model on this computer, served by <b>Ollama</b> or <b>LM Studio</b>, or a cloud API (OpenRouter, Requesty, DeepInfra…). See the README for setting up Ollama.</p>
+          <ul id="apiList" class="api-list"></ul>
+          <div id="apiAdd"></div>
+          <!-- One API model form: the Add form below the list, and an Edit form under each model being edited. -->
+          <template id="apiFormTemplate">
+            <details class="api-form">
+              <summary class="api-form-title">Add a model</summary>
+              <div data-f="presets" class="row presets">
+                <span class="price-label">On this computer:</span>
+                <button data-f="ollama" class="small secondary" title="Ollama's API: http://localhost:11434/v1">Ollama</button>
+                <button data-f="lmstudio" class="small secondary" title="LM Studio's server: http://localhost:1234/v1">LM Studio</button>
+              </div>
+              <label>Name <input data-f="name" placeholder="e.g. Llama 3.1 8B (Requesty)" /></label>
+              <label>API URL <input data-f="url" type="url" placeholder="https://router.requesty.ai/v1" /></label>
+              <label>API key <input data-f="key" type="password" autocomplete="off" placeholder="Leave empty if the server needs none" /></label>
+              <label>Model
+                <span class="row"><input data-f="model" class="grow" placeholder="e.g. openai/gpt-4o-mini" /><button data-f="list" class="small secondary">List models</button></span>
+              </label>
+              <datalist data-f="options"></datalist>
+              <span class="price-label">Price per million tokens, in US dollars (optional, for the cost shown after each run)</span>
+              <span class="row prices">
+                <label>Input <input data-f="priceIn" type="number" min="0" step="any" placeholder="0.10" /></label>
+                <label>Cached <input data-f="priceCached" type="number" min="0" step="any" placeholder="same" /></label>
+                <label>Output <input data-f="priceOut" type="number" min="0" step="any" placeholder="0.40" /></label>
+              </span>
+              <div class="row">
+                <button data-f="test" class="small secondary">Test</button>
+                <button data-f="save" class="small">Save</button>
+                <button data-f="cancel" class="text-button">Cancel</button>
+              </div>
+              <p data-f="status" class="hint"></p>
+            </details>
+          </template>
+          <p class="hint">Keys are stored only in this browser. The text an action needs (page text, your saved info, attached files) is sent to the model's server: with Ollama or LM Studio it stays on this computer. Small models (under about 7B) often answer well but are weak at multi-step tasks in the Chat tab.</p>
+      </section>
+    </div>
+
+    <div id="mainView" class="main-view">
+    <div id="accessBanner" class="banner hidden">
+      <span>The extension needs permission to read this site.</span>
+      <button id="grantAccess" class="small">Allow access</button>
+    </div>
+
+    <div id="sessionInfo" class="session-info"></div>
+
+    <!-- Everything inside #session belongs to one browser tab. The panel keeps one copy per tab
+         and shows the copy of the active tab (see src/main.js). -->
+    <div id="session" class="session">
+    <details id="historyBox" class="history-box">
+      <summary>History <span id="historyCount" class="count"></span></summary>
+      <ol id="historyList" class="history-list"></ol>
+      <p class="hint">Saved in this browser only, with the questions, answers and form values (which can include your saved info), and in chats the text of the attached files (attached again when you open the chat). Click one to open it in its tab: chats continue from there. <button id="deleteAllHistory" class="text-button">Delete all</button></p>
+    </details>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="chat" class="active">Chat</button>
+      <button role="tab" data-tab="summarize">Summarize</button>
+      <button role="tab" data-tab="search">Search</button>
+      <button role="tab" data-tab="form">Form</button>
+    </nav>
+
+    <div class="attachments">
+      <label class="attach-btn" title="Attach PDF, DOCX or TXT files. They are read in the browser and used as extra context by Chat, Form and Summarize.">
+        📎 Attach file
+        <input type="file" id="fileInput" multiple hidden
+          accept=".pdf,.docx,.txt,.md,.csv,.json,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+      </label>
+      <div id="attachList" class="chips"></div>
+    </div>
+
+    <section class="panel hidden" data-panel="summarize">
+      <label class="inline">Summarize
+        <select id="summarySource" class="grow"><option value="page">This page</option></select>
+      </label>
+      <div class="row">
+        <label class="inline">Length
+          <select id="summaryLength">
+            <option value="short">Short</option>
+            <option value="medium" selected>Medium</option>
+            <option value="detailed">Detailed</option>
+          </select>
+        </label>
+        <button id="summarize" class="grow">Summarize</button>
+      </div>
+      <p class="hint">Long pages and documents are summarized in parts, then merged.</p>
+    </section>
+
+    <section class="panel hidden" data-panel="search">
+      <div class="row">
+        <input id="searchQuery" dir="auto" class="grow" placeholder="A word, a phrase, or a description…" />
+        <button id="search">Search</button>
+      </div>
+      <div class="row hit-nav hidden" id="hitNav">
+        <button id="prevHit" class="secondary small">↑ Prev</button>
+        <span id="hitCount" class="hint"></span>
+        <button id="nextHit" class="secondary small">↓ Next</button>
+        <button id="clearHits" class="text-button">Clear</button>
+      </div>
+      <p class="hint">Exact matches are highlighted instantly; otherwise the model finds the most relevant passage.</p>
+    </section>
+
+    <section class="panel hidden" data-panel="form">
+      <details class="profile">
+        <summary>My saved info</summary>
+        <textarea id="profile" dir="auto" rows="6" placeholder="One per line, e.g.&#10;First name: Anna&#10;Last name: Schmidt&#10;Email: anna.schmidt@example.com&#10;City: Munich"></textarea>
+        <p class="hint">Stored only in this browser (chrome.storage.local). Lines in “key: value” form are matched to fields directly. Attached files are used too.</p>
+      </details>
+      <textarea id="formInstruction" dir="auto" rows="2" placeholder="Optional instruction, e.g. “use my work email, subject: refund request”"></textarea>
+      <button id="prepareFill">Scan form &amp; prepare values</button>
+      <div id="fillPreview" class="card preview hidden">
+        <div class="row"><strong>Review before applying</strong><button id="applyFill" class="small">Apply selected</button></div>
+        <div id="fillItems"></div>
+        <p class="hint">Passwords, payment card and file fields are never touched. The form is never submitted.</p>
+      </div>
+    </section>
+
+    <section class="panel" data-panel="chat">
+      <textarea id="goal" dir="auto" rows="3" placeholder="Ask about this page, or say what should be done, e.g. “What is the warranty?” or “Find a 14-inch laptop with 16 GB RAM under 900 euros and compare the best three”"></textarea>
+      <div id="agentOptions" class="row">
+        <label class="check"><input type="checkbox" id="confirmAll" /> Ask before every action</label>
+        <label class="inline" title="After these steps the agent asks you for more (it does not just stop).">Steps <input id="maxSteps" type="number" min="1" max="40" value="25" /></label>
+      </div>
+      <div class="row">
+        <button id="runTask" class="grow">Send</button>
+        <button id="pauseTask" class="secondary hidden" title="Pause the agent after the step it is on (the request already sent to the model finishes first)">⏸ Pause</button>
+        <button id="stopTask" class="secondary hidden" title="Stop now">■ Stop</button>
+        <button id="newTask" class="secondary hidden" title="Forget this conversation and start a new one">New chat</button>
+      </div>
+      <div id="confirmBox" class="card confirm hidden">
+        <div id="confirmText"></div>
+        <div id="confirmReason" class="hint"></div>
+        <div class="row">
+          <button id="confirmRun" class="small">Run</button>
+          <button id="confirmSkip" class="secondary small">Skip</button>
+          <button id="confirmStop" class="secondary small">Stop</button>
+        </div>
+      </div>
+      <!-- While this tab is shown, the Assistant card (status, time/cost, answer) moves here (main.js). -->
+      <div id="agentCurrentQ" class="agent-question hidden" dir="auto"></div>
+      <div id="agentAssistantSlot"></div>
+      <div id="agentAsk" class="card agent-ask hidden">
+        <div id="agentQuestion" dir="auto"></div>
+      </div>
+      <div id="agentTalk" class="agent-talk hidden">
+        <textarea id="agentReply" dir="auto" rows="2" placeholder="Message the agent (it reads it at its next step)…"></textarea>
+        <button id="agentSend" class="small">Send</button>
+      </div>
+      <details id="agentPlanBox" class="agent-box hidden" open><summary>Plan <span class="count"></span></summary><ol id="agentPlan" class="plan ended"></ol></details>
+      <details id="agentNotesBox" class="agent-box hidden"><summary>Notes <span class="count"></span></summary><ol id="agentNotes" class="notes"></ol></details>
+      <details id="agentResultsBox" class="agent-box hidden" open><summary>Results <span class="count"></span></summary><ol id="agentResults" class="results"></ol></details>
+      <details id="agentStepsBox" class="agent-box steps-box" open><summary>Steps <span id="agentStepCount" class="count"></span></summary><ol id="taskLog" class="log"></ol></details>
+      <details id="agentHistoryBox" class="agent-box hidden" open><summary>Earlier in this conversation (newest first) <span id="agentHistoryCount" class="count"></span></summary><div id="agentHistory" class="history"></div></details>
+      <p class="hint">Answers use this page and any attached files. For a task it plans, works step by step in this tab (opening pages of the site, clicking, typing), asks you when it needs something, and reads messages you send while it works. Ask more in the same box: it remembers the conversation (New chat starts over). Risky actions (submit, pay, delete, send…) always ask for confirmation.</p>
+    </section>
+
+    <div id="assistantHome"></div>
+    <section id="assistantCard" class="card output-wrap">
+      <div class="row">
+        <strong>Assistant</strong>
+        <span>
+          <button id="stop" class="text-button hidden">■ Stop</button>
+          <button id="copy" class="text-button">Copy</button>
+          <button id="clear" class="text-button">Clear</button>
+        </span>
+      </div>
+      <div id="status" class="hint"></div>
+      <div id="meter" class="meter hidden" title="Time and, for API models, requests, tokens and cost of the last run"></div>
+      <div class="answer-tools">
+        <button id="exportChat" class="text-button small hidden" title="This chat as a JSON file: questions, answers, steps, plan, notes, results and the agent's memory (and the model log, if kept)">Export chat (JSON)</button>
+        <button id="downloadLog" class="text-button small hidden" title="The requests sent to the model for this answer and its replies, exactly as they were, as a text file (one file per question)">Download model log</button>
+      </div>
+      <div id="output" class="output" dir="auto">Ready. Page content is treated as untrusted input.</div>
+      <div id="sources" class="sources"></div>
+    </section>
+    </div>
+    <footer>Each request goes to the model's server: to this computer with Ollama or LM Studio, to the provider with a cloud API.</footer>
+    </div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

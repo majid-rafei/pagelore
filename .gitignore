@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+dist/
+release/
+*.zip
+
+# Secrets: API keys
+.env
+.env.*
+
+# Editor local history (has copies of .env)
+.history/
+.vscode/
+.idea/
+
+# Model logs and chat exports: they can contain page text, saved info and attached files
+*-model-log.txt
+chat-*.json
+
+# Personal deploy scripts (SSH host and paths of this machine)
+sync-dist.ps1
+scripts/sync-dist.*
+
+# OS files
+.DS_Store
+Thumbs.db
