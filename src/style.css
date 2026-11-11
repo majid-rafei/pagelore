@@ -29,7 +29,7 @@ body { margin: 0; min-width: 300px; background: var(--bg); }
 header, .brand, .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .row { flex-wrap: wrap; }
 .brand { justify-content: flex-start; }
-.logo { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: #182f55; color: #fff; font-size: 22px; }
+.logo { display: block; width: 36px; height: 36px; flex: none; }
 h1 { font-size: 15px; margin: 0; }
 header p { font-size: 11px; color: var(--muted); margin: 3px 0 0; }
 .status { font-size: 10px; color: var(--muted); background: var(--secondary); padding: 5px 8px; border-radius: 20px; white-space: nowrap; }
