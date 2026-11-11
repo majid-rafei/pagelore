@@ -41,7 +41,7 @@
 
 ## Quick start
 
-1. `npm install && npm run build`, then load `dist/` in `chrome://extensions` (Developer mode → **Load unpacked**).
+1. Download `pagelore-<version>.zip` from [Releases](https://github.com/majid-rafei/pagelore/releases/latest) and unzip it, or build it yourself with `npm install && npm run build` (the output is `dist/`). Then load the folder in `chrome://extensions` (Developer mode → **Load unpacked**).
 2. Start Ollama and pull a model: `ollama pull qwen3:8b`.
 3. Click the extension icon on any page, open ⚙ Settings → **Models** → **Add a model** → **Ollama**, pick the model, **Test**, **Save**.
 
