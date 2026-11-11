@@ -23,11 +23,11 @@ def draw():
     icon.paste(bg, (0, 0), mask)
     d = ImageDraw.Draw(icon)
     white = (255, 255, 255, 255)
-    # Speech bubble
-    d.rounded_rectangle([96, 120, 416, 352], radius=64, fill=white)
-    d.polygon([(150, 340), (150, 430), (240, 346)], fill=white)
-    # Four-point sparkle inside the bubble ("AI")
-    cx, cy, r, w = 256, 236, 84, 22
+    # A "P" for Pagelore: stem and bowl
+    d.rounded_rectangle([140, 96, 212, 420], radius=30, fill=white)
+    d.rounded_rectangle([140, 96, 392, 312], radius=108, fill=white)
+    # Four-point sparkle ("AI") in the bowl of the P
+    cx, cy, r, w = 268, 204, 70, 18
     accent = (79, 70, 229, 255)
     d.polygon([(cx, cy - r), (cx + w, cy - w), (cx + r, cy), (cx + w, cy + w),
                (cx, cy + r), (cx - w, cy + w), (cx - r, cy), (cx - w, cy - w)], fill=accent)
