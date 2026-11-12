@@ -599,17 +599,64 @@
     return out.slice(0, 6);
   }
 
+  // ---------- Dialogs on top: what really gets a click ----------
+  // A dialog or overlay opened on top of the page (an offer, a cookie banner, a second dialog over the
+  // first) takes the clicks. A click sent with code still reaches the element behind it, and the site
+  // usually ignores it: the agent would see "clicked" while nothing changed. So the snapshot marks the
+  // elements behind such a layer, and an action on one is refused with what is in the way.
+  const DIALOG_SEL = '[role="dialog"],[role="alertdialog"],dialog[open],[aria-modal="true"]';
+  /** The layer that covers the element at its center (a dialog, or a large fixed backdrop), or null. */
+  function blockerOf(el, rect = el.getBoundingClientRect()) {
+    if (!(rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth)) return null;
+    const x = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2));
+    const y = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2));
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || el.contains(hit) || hit.contains(el)) return null;
+    if (hit.closest('label') && hit.closest('label').control === el) return null;
+    let layer = hit.closest(DIALOG_SEL);
+    if (!layer) {
+      // A backdrop: a fixed layer over most of the window (a sticky header is not one).
+      let a = hit;
+      while (a && a !== document.body && getComputedStyle(a).position !== 'fixed') a = a.parentElement;
+      if (!a || a === document.body) return null;
+      const r = a.getBoundingClientRect();
+      if (r.width * r.height < innerWidth * innerHeight * 0.5) return null;
+      layer = [...a.querySelectorAll(DIALOG_SEL)].at(-1) || a;
+    }
+    return layer.contains(el) ? null : layer;
+  }
+  /** A short name for a dialog: its label, its heading, or the start of its text. */
+  function layerName(layer) {
+    return clean(layer.getAttribute('aria-label') || textOfIds(layer.getAttribute('aria-labelledby')) ||
+      layer.querySelector('h1,h2,h3,[role="heading"]')?.innerText || layer.innerText, 120);
+  }
+  /** A checkbox or radio hidden by the site and drawn with its label: the label is what is seen and clicked. */
+  function shownProxy(el, type) {
+    if (!el.matches('input') || (type !== 'checkbox' && type !== 'radio')) return null;
+    const lab = el.labels?.[0] || el.closest('label');
+    if (!lab || !isVisible(lab)) return null;
+    const r = lab.getBoundingClientRect();
+    return r.width >= 2 && r.height >= 2 ? lab : null;
+  }
+
   function snapshot({ limit = 400 } = {}) {
     const visCache = new Map();
     const out = [];
+    const layers = new Map(); // layer → how many elements it covers
     const vh = innerHeight, vw = innerWidth;
     for (const el of document.querySelectorAll(INTERACTIVE)) {
       const type = (el.type || '').toLowerCase();
       if (el.matches('input') && ['hidden', 'password', 'file'].includes(type)) continue;
       if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
-      if (!isVisible(el, visCache)) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 2 || rect.height < 2) continue;
+      let rect = el.getBoundingClientRect();
+      let shown = el;
+      if (!isVisible(el, visCache) || rect.width < 2 || rect.height < 2) {
+        // A styled checkbox: the real input is hidden, its label is drawn instead.
+        const proxy = shownProxy(el, type);
+        if (!proxy) continue;
+        shown = proxy;
+        rect = proxy.getBoundingClientRect();
+      }
       if (SENSITIVE_AUTOCOMPLETE.test(el.autocomplete || '')) continue;
       const tag = el.tagName.toLowerCase();
       const item = {
@@ -617,6 +664,11 @@
         text: accessibleName(el),
         inViewport: rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw
       };
+      // A button outside any form submits nothing (its type is "submit" only by default): a plain button.
+      if (tag === 'button' && type === 'submit' && !el.form) item.type = 'button';
+      const layer = blockerOf(shown, rect);
+      if (layer) { item.covered = true; layers.set(layer, (layers.get(layer) || 0) + 1); }
+      item._el = el;
       if (el.matches('input,textarea')) {
         if (type === 'checkbox' || type === 'radio') item.checked = el.checked;
         else {
@@ -640,7 +692,22 @@
       out.push(item);
       if (out.length >= limit) break;
     }
+    // The layer on top (the one covering the most elements): its elements are marked, and the elements
+    // outside it that are off-screen are behind it too, when it is a modal one.
+    const top = [...layers].sort((a, b) => b[1] - a[1])[0]?.[0];
+    let overlay = null;
+    // A small floating panel (a chat bubble in a corner) covers only what is under it, which stays marked.
+    const shownCount = out.filter((i) => i.inViewport && !i.onTop).length;
+    if (top && (top.matches('[aria-modal="true"],dialog:modal') || layers.get(top) * 2 >= shownCount)) {
+      for (const item of out) {
+        if (top.contains(item._el)) item.onTop = true;
+        else if (!item.inViewport) item.covered = true;
+      }
+      overlay = { name: layerName(top), ids: out.filter((i) => i.onTop).map((i) => i.id) };
+    }
+    for (const item of out) delete item._el;
     return {
+      overlay,
       url: location.href,
       title: document.title,
       scroll: { y: Math.round(scrollY), max: Math.round(document.documentElement.scrollHeight - innerHeight) },
@@ -678,12 +745,20 @@
     actionBox = el.closest(BOX_SEL);
     mark = ++msgClock;
     for (const [k, m] of msgSeen) if (m.at < msgClock - 3) msgSeen.delete(k); // keep the last actions only
-    el.scrollIntoView({ block: 'center', behavior: 'instant' });
-    flash(el);
+    const proxy = shownProxy(el, type);
+    const target = proxy && (!isVisible(el) || el.getBoundingClientRect().width < 2) ? proxy : el;
+    target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const layer = blockerOf(target);
+    if (layer) {
+      return { ok: false, message: `not done: “${accessibleName(el)}” is behind a dialog open on top of it (“${layerName(layer)}”), ` +
+        'which takes the clicks. Close that dialog first (find_elements lists its buttons, e.g. Close, Dismiss or No thanks), then try again' };
+    }
+    flash(target);
+    const state = () => (type === 'checkbox' || type === 'radio' ? ` (now ${el.checked ? 'checked' : 'unchecked'})` : '');
     switch (action) {
       case 'click':
-        mouseSequence(el);
-        return { ok: true, message: `clicked “${accessibleName(el)}”` };
+        mouseSequence(target);
+        return { ok: true, message: `clicked “${accessibleName(el)}”${state()}` };
       case 'type': {
         el.focus();
         if (el.isContentEditable) {
@@ -713,8 +788,10 @@
       case 'uncheck': {
         const want = action === 'check';
         const current = el.matches('input') ? el.checked : el.getAttribute('aria-checked') === 'true';
-        if (current !== want) mouseSequence(el);
-        return { ok: true, message: `${action}ed “${accessibleName(el)}”` };
+        if (current !== want) mouseSequence(target);
+        const now = el.matches('input') ? el.checked : el.getAttribute('aria-checked') === 'true';
+        return now === want ? { ok: true, message: `${action}ed “${accessibleName(el)}”` }
+          : { ok: false, message: `“${accessibleName(el)}” is still ${now ? 'checked' : 'unchecked'}: the page did not take the click` };
       }
       case 'press_enter': {
         el.focus();
