@@ -2,7 +2,7 @@
 import { normalize } from '../text.js';
 
 // Matched against accent-folded, lower-cased text (English plus common German, French, Spanish and Italian verbs).
-const RISKY = /\b(submit|pay|buy|order|purchase|checkout|delete|remove|confirm|send|transfer|subscribe|unsubscribe|sign ?out|log ?out|publish|post|absenden|senden|bezahlen|kaufen|bestellen|loschen|entfernen|bestatigen|abmelden|abonnieren|envoyer|payer|acheter|commander|supprimer|confirmer|valider|deconnexion|enviar|pagar|comprar|pedir|eliminar|borrar|confirmar|invia|paga|acquista|ordina|elimina|conferma)\b/;
+const RISKY = /\b(submit|pay|buy|order|purchase|checkout|delete|remove|confirm|send|transfer|subscribe|unsubscribe|sign ?out|log ?out|publish|post|save|apply|update|speichern|ubernehmen|aktualisieren|enregistrer|sauvegarder|appliquer|guardar|salvar|aplicar|actualizar|salva|applica|aggiorna|absenden|senden|bezahlen|kaufen|bestellen|loschen|entfernen|bestatigen|abmelden|abonnieren|envoyer|payer|acheter|commander|supprimer|confirmer|valider|deconnexion|enviar|pagar|comprar|pedir|eliminar|borrar|confirmar|invia|paga|acquista|ordina|elimina|conferma)\b/;
 
 // Set by the page script (content.js) for fields that only run a search.
 const isSearchField = (el) => !!el.search;
@@ -24,6 +24,7 @@ export function describeElement(el) {
   if (el.checked !== undefined) s += el.checked ? ' (checked)' : ' (unchecked)';
   if (el.options) s += ` options: ${el.options.slice(0, 12).join(' | ')}`;
   if (el.href) s += ` → ${el.href}`;
+  if (el.error) s += ` (error: ${el.error})`;
   if (!el.inViewport) s += ' (off-screen)';
   return s;
 }

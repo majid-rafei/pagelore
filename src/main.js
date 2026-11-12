@@ -676,6 +676,8 @@ class Session {
     this.$('confirmText').textContent = text;
     this.$('confirmReason').textContent = reason ? `Reason: ${reason}` : '';
     this.$('confirmBox').classList.toggle('risky', risky);
+    // Only for actions that need confirmation (submit, save, delete…), not for the other questions.
+    this.$('confirmAllow').classList.toggle('hidden', !risky);
     const box = this.$('confirmBox');
     box.classList.remove('hidden', 'attention');
     // The box sits above the steps and the answer: bring it into view, or a task seems stuck.
@@ -720,6 +722,13 @@ class Session {
       this.$('confirmSkip').textContent = 'Skip';
       return d === 'run' ? steps : d === 'skip' ? 0 : 'stop';
     });
+  }
+  /** The step limit from the panel (3–300); the box shows the value used, so a cap is never silent. */
+  stepLimit() {
+    const box = this.$('maxSteps');
+    const n = Math.min(300, Math.max(3, Math.round(Number(box.value)) || 25));
+    box.value = String(n);
+    return n;
   }
   hideConfirm(decision = 'stop') {
     this.$('confirmBox').classList.add('hidden');
@@ -785,7 +794,7 @@ class Session {
         onWait: (ms) => this.setStatus(`Waiting ${Math.ceil(ms / 1000)} s before opening the next page (to keep the load on the site low)…`),
         onBlocked: (reason) => this.askBlocked(reason)
       }),
-      maxSteps: Math.min(40, Math.max(3, Number(this.$('maxSteps').value) || 25)),
+      maxSteps: this.stepLimit(),
       confirmAll: this.$('confirmAll').checked,
       compactAt: Number(settings.compactAt) || 0,
       files: { list: () => this.attachments.list(), text: (id) => this.attachments.get(id)?.text || '' },
@@ -1150,6 +1159,7 @@ class Session {
     on('confirmRun', 'click', () => this.hideConfirm('run'));
     on('confirmSkip', 'click', () => this.hideConfirm('skip'));
     on('confirmStop', 'click', () => this.hideConfirm('stop'));
+    on('confirmAllow', 'click', () => this.hideConfirm('all'));
 
     on('stop', 'click', () => this.controller?.abort());
     on('stopTask', 'click', () => this.controller?.abort());

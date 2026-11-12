@@ -532,6 +532,73 @@
     return /search|suche|recherche|buscar|cerca|zoek|szukaj|pesquis/i.test(`${el.placeholder || ''} ${el.getAttribute('aria-label') || ''} ${el.id} ${el.className}`);
   }
 
+  // ---------- Messages the page shows: toasts, alerts, field errors ----------
+  // A click or an entry often gets its answer as text, not as a new element: "This skill is already on
+  // your profile", "Saved", an error under a field. Such text often appears outside the form or dialog
+  // (a toast in a corner, a live region at the end of the page). The watcher records text that appears
+  // after an action in alerts, live regions, toasts and error messages anywhere on the page, and new
+  // text in the dialog or form the action was in, so the agent hears what the page said.
+  const NOTICE_SEL = '[role="alert"],[role="status"],[role="alertdialog"],[aria-live="polite"],[aria-live="assertive"],output,' +
+    '[class*="toast" i],[class*="snackbar" i],[class*="notification" i],[class*="notice" i],[class*="alert" i],' +
+    '[class*="error" i],[class*="invalid" i],[class*="feedback" i],[class*="flash" i]';
+  const BOX_SEL = '[role="dialog"],[role="alertdialog"],dialog,form';
+  let msgClock = 0, msgObserver = null, actionBox = null;
+  const msgSeen = new Map(); // element → { at, text }
+  function noteChange(node, attrOnly = false) {
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    if (!el || el.closest('[role="listbox"],[role="option"],[role="menu"],script,style')) return;
+    let target = el.closest(NOTICE_SEL);
+    // New text in the form or dialog of the action (not a class change there: focus styles are not news).
+    if (!target && !attrOnly && actionBox?.isConnected && actionBox.contains(el)) target = el.closest('p,span,div,li,label') || el;
+    if (!target) return;
+    const full = String(target.innerText || target.textContent || '').trim();
+    if (!full || full.length > 400) return; // a message is short; a large box is not one
+    msgSeen.set(target, { at: msgClock, text: clean(full, 300) });
+  }
+  function watchMessages() {
+    if (msgObserver || !document.body) return;
+    msgObserver = new MutationObserver((list) => {
+      for (const m of list) {
+        if (m.type === 'childList') for (const n of m.addedNodes) {
+          noteChange(n);
+          if (n.nodeType === 1) for (const x of n.querySelectorAll?.(NOTICE_SEL) || []) noteChange(x);
+        } else noteChange(m.target, m.type === 'attributes');
+      }
+    });
+    msgObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'hidden', 'style', 'aria-hidden', 'aria-invalid'] });
+  }
+  /** The error message of a field marked invalid (aria-errormessage / aria-describedby), or ''. */
+  function fieldError(el) {
+    if (el.getAttribute('aria-invalid') !== 'true') return '';
+    const t = textOfIds(el.getAttribute('aria-errormessage')) || textOfIds(el.getAttribute('aria-describedby'));
+    return clean(t || 'marked as invalid', 200);
+  }
+  /** Text that appeared since the mark (only what is still or was briefly visible), newest last. */
+  function pageMessages({ since = 0 } = {}) {
+    const vis = new Map(), out = [];
+    for (const [el, m] of msgSeen) {
+      if (m.at < since) continue;
+      const now = el.isConnected && isVisible(el, vis) ? clean(el.innerText || el.textContent, 300) : '';
+      const text = now || m.text; // a toast may be gone already: what it said still counts
+      if (text && !out.some((o) => o.includes(text) || text.includes(o))) out.push(text);
+    }
+    for (const el of document.querySelectorAll('[aria-invalid="true"]')) {
+      const e = fieldError(el);
+      if (e && isVisible(el, vis)) { const t = `${labelText(el) || accessibleName(el)}: ${e}`; if (!out.some((o) => o.includes(e))) out.push(t); }
+    }
+    return out.slice(-6);
+  }
+  /** Notices visible now (alerts, live regions, toasts with text). */
+  function visibleNotices() {
+    const vis = new Map(), out = [];
+    for (const el of document.querySelectorAll('[role="alert"],[role="status"],[role="alertdialog"],[aria-live="assertive"],[class*="toast" i],[class*="snackbar" i]')) {
+      if (!isVisible(el, vis)) continue;
+      const t = clean(el.innerText, 300);
+      if (t && !out.some((o) => o.includes(t) || t.includes(o))) out.push(t);
+    }
+    return out.slice(0, 6);
+  }
+
   function snapshot({ limit = 400 } = {}) {
     const visCache = new Map();
     const out = [];
@@ -559,6 +626,8 @@
           if (v.length > 90) item.valueLength = el.value.length;
         }
         if (isSearchInput(el, type)) item.search = true;
+        const err = fieldError(el);
+        if (err) item.error = err;
       }
       if (el instanceof HTMLSelectElement) {
         item.options = [...el.options].map((o) => clean(o.text, 40)).slice(0, 20);
@@ -575,7 +644,8 @@
       url: location.href,
       title: document.title,
       scroll: { y: Math.round(scrollY), max: Math.round(document.documentElement.scrollHeight - innerHeight) },
-      elements: out
+      elements: out,
+      notices: visibleNotices()
     };
   }
 
@@ -588,7 +658,13 @@
     el.click();
   }
 
-  function perform({ action, id, value }) {
+  let mark = 0;
+  function perform(step) {
+    mark = 0;
+    const res = performAction(step);
+    return mark ? { ...res, mark } : res;
+  }
+  function performAction({ action, id, value }) {
     if (action === 'scroll_down' || action === 'scroll_up') {
       window.scrollBy({ top: (action === 'scroll_down' ? 1 : -1) * innerHeight * 0.8, behavior: 'instant' });
       return { ok: true, message: `scrolled ${action === 'scroll_down' ? 'down' : 'up'}` };
@@ -597,6 +673,11 @@
     if (!el) return { ok: false, message: `element ${id} no longer exists` };
     const type = (el.type || '').toLowerCase();
     if (el.matches('input') && ['password', 'file', 'hidden'].includes(type)) return { ok: false, message: 'this field type is not allowed' };
+    // Watch what the page says after this action (read with pageMessages, since this mark).
+    watchMessages();
+    actionBox = el.closest(BOX_SEL);
+    mark = ++msgClock;
+    for (const [k, m] of msgSeen) if (m.at < msgClock - 3) msgSeen.delete(k); // keep the last actions only
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
     flash(el);
     switch (action) {
@@ -852,6 +933,6 @@
   globalThis.__localAI = {
     version: VERSION,
     extract, findAll, moveHit, clearHighlights, highlightQuote, highlightBlocks,
-    listFields, fillFields, listAdders, addItems, snapshot, perform, submitSearch, listItems, blocked
+    listFields, fillFields, listAdders, addItems, snapshot, perform, pageMessages, submitSearch, listItems, blocked
   };
 })();

@@ -198,7 +198,7 @@
       <textarea id="goal" dir="auto" rows="3" placeholder="Ask about this page, or say what should be done, e.g. “What is the warranty?” or “Find a 14-inch laptop with 16 GB RAM under 900 euros and compare the best three”"></textarea>
       <div id="agentOptions" class="row">
         <label class="check"><input type="checkbox" id="confirmAll" /> Ask before every action</label>
-        <label class="inline" title="After these steps the agent asks you for more (it does not just stop).">Steps <input id="maxSteps" type="number" min="1" max="40" value="25" /></label>
+        <label class="inline" title="After these steps the agent asks you for more (it does not just stop).">Steps <input id="maxSteps" type="number" min="3" max="300" value="25" /></label>
       </div>
       <div class="row">
         <button id="runTask" class="grow">Send</button>
@@ -211,6 +211,7 @@
         <div id="confirmReason" class="hint"></div>
         <div class="row">
           <button id="confirmRun" class="small">Run</button>
+          <button id="confirmAllow" class="secondary small hidden" title="Run this and allow such actions without asking until this request is done">Allow for this request</button>
           <button id="confirmSkip" class="secondary small">Skip</button>
           <button id="confirmStop" class="secondary small">Stop</button>
         </div>
