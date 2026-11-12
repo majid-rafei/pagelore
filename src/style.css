@@ -176,6 +176,12 @@ body.dragging #app { outline: 3px dashed var(--accent); outline-offset: -6px; }
 /* Steps of the agent: foldable, hidden until there is one */
 .steps-box:not(:has(li)) { display: none; }
 .agent-box summary .count { font-weight: 400; color: var(--muted); }
+/* Steps newest first (the default): the list is reversed on screen, so its numbers stay right */
+body.steps-newest ol.log { display: flex; flex-direction: column-reverse; }
+body.steps-newest ol.log > li { display: list-item; }
+.sort-toggle { margin-inline-start: 8px; padding: 0 6px; font-size: 11px; font-weight: 400; line-height: 1.6;
+  background: none; border: 1px solid var(--border, #ccc); border-radius: 4px; color: var(--muted); cursor: pointer; }
+.sort-toggle:hover { color: var(--text); }
 .log li.status { background: none; border: 0; padding: 0; border-radius: 0; font-size: inherit; display: list-item; }
 
 /* Agent conversation: the current question, and earlier turns (folded) */

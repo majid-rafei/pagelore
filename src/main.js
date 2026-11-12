@@ -179,6 +179,8 @@ class Session {
     this.reasoning = settings.reasoning; // reasoning level of this tab
     this.root = template.cloneNode(true);
     this.root.removeAttribute('id');
+    const order = this.root.querySelector('.steps-order');
+    if (order) order.textContent = document.body.classList.contains('steps-newest') ? '↑↓ Newest first' : '↑↓ Oldest first';
     this.attachments = createAttachmentStore();
     this.controller = null;      // AbortController of the running task
     this.searchHandle = null;    // PageHandle of the last search (for prev/next)
@@ -238,7 +240,7 @@ class Session {
   setBusy(busy) {
     this.root.querySelectorAll('.panel button').forEach((b) => {
       // The Stop/Pause/Copy buttons stay usable (in the Chat tab the Assistant card, with its Stop, is inside the panel).
-      if (!b.closest('#confirmBox') && !b.closest('#hitNav') && !b.closest('#agentTalk') && !b.matches('#stop, #stopTask, #pauseTask, #copy')) b.disabled = busy;
+      if (!b.closest('#confirmBox') && !b.closest('#hitNav') && !b.closest('#agentTalk') && !b.matches('#stop, #stopTask, #pauseTask, #copy, .steps-order')) b.disabled = busy;
     });
     this.$('stop').classList.toggle('hidden', !busy);
     this.$('stopTask').classList.toggle('hidden', !busy);
@@ -1252,6 +1254,25 @@ function turnElement(turn, number) {
   el.append(Object.assign(document.createElement('div'), { className: 'turn-tools' })); // the model log button, when there is a log
   return el;
 }
+
+/** Steps newest first (the default) or oldest first: one choice for every step list, kept in this browser. */
+function applyStepsOrder(toggle = false) {
+  let newest = true;
+  try { newest = localStorage.getItem('stepsOrder') !== 'oldest'; } catch { /* storage blocked: the default */ }
+  if (toggle) {
+    newest = !newest;
+    try { localStorage.setItem('stepsOrder', newest ? 'newest' : 'oldest'); } catch { /* not kept */ }
+  }
+  document.body.classList.toggle('steps-newest', newest);
+  for (const b of document.querySelectorAll('.steps-order')) b.textContent = newest ? '↑↓ Newest first' : '↑↓ Oldest first';
+}
+applyStepsOrder();
+// One listener for every panel (each tab's panel is a copy of the same markup).
+document.addEventListener('click', (e) => {
+  if (!e.target.closest?.('.steps-order')) return;
+  e.preventDefault(); e.stopPropagation(); // a button in the summary: do not fold the box
+  applyStepsOrder(true);
+}, true);
 
 let selfTabId = null;
 let panelWindowId = null;
