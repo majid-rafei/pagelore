@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Pagelore – AI side panel with your own model",
   "short_name": "Pagelore",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "AI in the side panel with your own model (Ollama, LM Studio or an API): ask, summarize, search, fill forms and run tasks.",
   "minimum_chrome_version": "116",
   "permissions": [

@@ -1,7 +1,7 @@
 {
   "name": "pagelore",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "AI assistant in Chrome's side panel with your own model (Ollama, LM Studio or any OpenAI-compatible API)",
   "license": "MIT",
   "author": "Majid Rafei",
