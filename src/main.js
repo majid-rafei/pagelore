@@ -1050,7 +1050,11 @@ class Session {
       const meta = Object.assign(document.createElement('div'), { className: 'hint',
         textContent: [host, new Date(e.updatedAt).toLocaleString(), n > 1 ? `${n} questions` : ''].filter(Boolean).join(' · ') });
       const del = Object.assign(document.createElement('button'), { className: 'text-button', textContent: 'Delete' });
-      del.addEventListener('click', async () => { await deleteHistory(e.id); this.renderHistory(); });
+      del.addEventListener('click', async () => {
+        const what = `${HISTORY_TYPES[e.type] || e.type}: “${clip(e.title, 80)}${Array.from(e.title || '').length > 80 ? '…' : ''}”`;
+        if (!confirm(`Delete this entry from the history?\n\n${what}${n > 1 ? ` (${n} questions)` : ''}\n\nThis cannot be undone.`)) return;
+        await deleteHistory(e.id); this.renderHistory();
+      });
       const exp = Object.assign(document.createElement('button'), { className: 'text-button', textContent: 'Export',
         title: 'Save this entry as a JSON file (with the model log, when it is the chat open here and a log was kept)' });
       exp.addEventListener('click', () => {
