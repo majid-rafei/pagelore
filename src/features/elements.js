@@ -20,7 +20,7 @@ export function describeElement(el) {
   let kind = el.role || el.tag;
   if (el.tag === 'input') kind = `input[${el.type || 'text'}]`;
   let s = `[${el.id}] ${kind} "${el.text}"`;
-  if (el.value) s += ` value="${el.value}"`;
+  if (el.value) s += ` value="${el.value}"${el.valueLength ? ` (${el.valueLength} characters; the middle is not shown)` : ''}`;
   if (el.checked !== undefined) s += el.checked ? ' (checked)' : ' (unchecked)';
   if (el.options) s += ` options: ${el.options.slice(0, 12).join(' | ')}`;
   if (el.href) s += ` → ${el.href}`;

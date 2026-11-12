@@ -2,7 +2,7 @@
 // It never runs model output as code: the panel can only call the fixed API at the bottom of this file.
 (() => {
   'use strict';
-  const VERSION = 5;
+  const VERSION = 7;
   if (globalThis.__localAI?.version === VERSION) return;
 
   // ---------- Stable element ids ----------
@@ -351,13 +351,42 @@
     return 'text';
   }
 
+  /**
+   * Where the form is: the open dialog that holds fields (the innermost one), or else the whole page.
+   * With a dialog open, fields and buttons of the page behind it (a language picker in the footer,
+   * a search box) are left out: changing them could change the page itself.
+   */
+  function formScope() {
+    const vis = new Map();
+    const dialogs = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog[open],[aria-modal="true"]')]
+      .filter((d) => isVisible(d, vis) && [...d.querySelectorAll('input,textarea,select')]
+        .some((el) => !EXCLUDED_TYPES.has((el.type || '').toLowerCase()) && !el.disabled && isVisible(el, vis)));
+    return dialogs.at(-1) || document;
+  }
+  /** The form or dialog of a field (its id, or 0): only fields that share one with a proposal are cleared. */
+  const boxOf = (el) => { const c = el.closest('[role="dialog"],[role="alertdialog"],dialog,form'); return c ? idOf(c) : 0; };
+  /** How to find a field again when the page re-rendered it (new element, same label, name and position). */
+  const locatorKey = (kind, label, name) => `${kind}|${normalize(label)}|${name}`;
+  function findByLocator(loc) {
+    if (!loc) return null;
+    const vis = new Map();
+    const same = [...formScope().querySelectorAll('input,textarea,select')].filter((el) => {
+      const type = (el.type || el.tagName).toLowerCase();
+      if (EXCLUDED_TYPES.has(type) || type === 'radio' || el.disabled || el.readOnly) return false;
+      if (!isVisible(el, vis) && type !== 'checkbox') return false;
+      return locatorKey(fieldKind(el), labelText(el), el.name || '') === loc.key;
+    });
+    return same[loc.nth] || (same.length === 1 ? same[0] : null);
+  }
+
   let radioGroups = new Map();
   function listFields() {
     radioGroups = new Map();
     const fields = [];
     const visCache = new Map();
     const seenRadio = new Set();
-    for (const el of document.querySelectorAll('input,textarea,select')) {
+    const nth = new Map();
+    for (const el of formScope().querySelectorAll('input,textarea,select')) {
       const type = (el.type || el.tagName).toLowerCase();
       if (EXCLUDED_TYPES.has(type) || el.disabled || el.readOnly) continue;
       if (SENSITIVE_AUTOCOMPLETE.test(el.autocomplete || '')) continue;
@@ -365,8 +394,9 @@
       const kind = fieldKind(el);
       const base = {
         kind, type, name: el.name || '', autocomplete: el.getAttribute('autocomplete') || '',
-        required: !!el.required, group: groupText(el)
+        required: !!el.required, group: groupText(el), box: boxOf(el)
       };
+      if (kind === 'text' && isSearchInput(el, type)) base.search = true;
       if (kind === 'radio') {
         const key = `${el.form ? idOf(el.form) : 0}:${el.name || idOf(el)}`;
         if (seenRadio.has(key)) continue;
@@ -381,13 +411,16 @@
       }
       if (kind === 'checkbox' && !isVisible(el, visCache) && !(el.labels?.[0] && isVisible(el.labels[0], visCache))) continue;
       const field = { ...base, id: idOf(el), label: labelText(el), placeholder: clean(el.placeholder, 60) };
+      const key = locatorKey(kind, field.label, base.name);
+      field.locator = { key, nth: nth.get(key) || 0 };
+      nth.set(key, field.locator.nth + 1);
       if (kind === 'select') {
         field.options = [...el.options].filter((o) => !o.disabled).map((o) => clean(o.text, 60) || o.value).slice(0, 60);
         field.value = clean(el.selectedOptions[0]?.text || '', 60);
       } else if (kind === 'checkbox') {
         field.value = el.checked ? 'true' : 'false';
       } else {
-        field.value = clean(el.value, 80);
+        field.value = clean(el.value, 300);
       }
       fields.push(field);
       if (fields.length >= 120) break;
@@ -421,7 +454,7 @@
     setTimeout(() => { el.style.outline = prev; el.style.outlineOffset = prevOffset; }, 1400);
   }
 
-  function fillOne(id, value) {
+  function fillOne(id, value, locator) {
     const group = radioGroups.get(Number(id));
     if (group) {
       const live = group.filter((r) => r.isConnected);
@@ -431,12 +464,18 @@
       flash(live[idx].labels?.[0] || live[idx]);
       return { ok: true };
     }
-    const el = elOf(id);
-    if (!el) return { ok: false, message: 'field no longer exists (page changed?)' };
+    const el = elOf(id) || findByLocator(locator);
+    if (!el) return { ok: false, message: 'the field is not on the page now: scan the form again' };
     const type = (el.type || '').toLowerCase();
     if (EXCLUDED_TYPES.has(type) || el.disabled || el.readOnly) return { ok: false, message: 'field is not fillable' };
     if (el instanceof HTMLSelectElement) {
       const opts = [...el.options];
+      if (String(value) === '') { // clear: the empty option, or the first one (usually "Select…")
+        const empty = opts.findIndex((o) => o.value === '');
+        setNativeValue(el, opts[empty >= 0 ? empty : 0].value);
+        flash(el);
+        return { ok: true };
+      }
       let idx = matchOption(opts.map((o) => o.text), value);
       if (idx < 0) idx = matchOption(opts.map((o) => o.value), value);
       if (idx < 0) return { ok: false, message: `no option matches “${value}”` };
@@ -455,7 +494,7 @@
 
   function fillFields(updates) {
     return (updates || []).map((u) => {
-      try { return { id: u.id, ...fillOne(u.id, u.value) }; }
+      try { return { id: u.id, ...fillOne(u.id, u.value, u.locator) }; }
       catch (e) { return { id: u.id, ok: false, message: e.message }; }
     });
   }
@@ -513,7 +552,12 @@
       };
       if (el.matches('input,textarea')) {
         if (type === 'checkbox' || type === 'radio') item.checked = el.checked;
-        else item.value = clean(el.value, 60);
+        else {
+          // A long value is shortened in the middle, with its length, so the agent can see the field is filled.
+          const v = clean(el.value, 100000);
+          item.value = v.length > 90 ? `${v.slice(0, 60)} … ${v.slice(-25)}` : v;
+          if (v.length > 90) item.valueLength = el.value.length;
+        }
         if (isSearchInput(el, type)) item.search = true;
       }
       if (el instanceof HTMLSelectElement) {
@@ -569,7 +613,12 @@
         } else {
           return { ok: false, message: 'element is not a text field' };
         }
-        return { ok: true, message: `typed “${value}” into “${accessibleName(el)}”` };
+        const want = String(value ?? '');
+        const now = el.isContentEditable ? el.innerText : el.value;
+        const shown = want.length > 120 ? `${want.slice(0, 100)}…` : want;
+        if (want.length <= 120) return { ok: true, message: `typed “${shown}” into “${accessibleName(el)}”` };
+        return { ok: true, message: `typed into “${accessibleName(el)}”: ${want.length} characters, ` +
+          `${now.length >= want.length ? 'the field holds all of them' : `but the field kept only ${now.length} (it may have a length limit)`} (“${shown}”)` };
       }
       case 'select': {
         if (el instanceof HTMLSelectElement) {
@@ -703,9 +752,106 @@
     return { url: location.href, title: document.title, items, next: next || '' };
   }
 
+  // ---------- "Add …" buttons of a form (Add skill, Add language…) ----------
+  const ADD_RE = /^\s*\+?\s*(add|hinzufügen|ajouter|añadir|agregar|aggiungi|toevoegen)\b|\b(hinzufügen|toevoegen)\s*$/i;
+  // Not list items: files and media, shopping, or links.
+  const ADD_SKIP = /media|file|photo|image|picture|video|attachment|upload|document|\blink\b|cart|basket|bag|wish|datei|foto|bild|anhang|warenkorb|fichier|panier|archivo|carrito|immagine|carrello/i;
+  const isTextInput = (el) => el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && ['', 'text', 'search', 'email', 'url', 'tel'].includes((el.type || '').toLowerCase())) || el?.getAttribute?.('role') === 'combobox';
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function waitFor(fn, ms) {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = fn(Date.now() + ms - end);
+      if (v || Date.now() > end) return v || null;
+      await sleep(100);
+    }
+  }
+  /** The containers (form, dialog) that hold the page's fillable fields. */
+  function fieldContainers() {
+    const scope = formScope();
+    if (scope !== document) return [scope];
+    const vis = new Map();
+    const set = new Set();
+    for (const el of document.querySelectorAll('input,textarea,select')) {
+      const type = (el.type || '').toLowerCase();
+      if (EXCLUDED_TYPES.has(type) || el.disabled || !isVisible(el, vis)) continue;
+      const c = el.closest('[role="dialog"],dialog,form');
+      if (c) set.add(c);
+    }
+    return [...set];
+  }
+  function addButtons() {
+    const vis = new Map();
+    const out = [];
+    for (const c of fieldContainers()) {
+      for (const el of c.querySelectorAll('button,[role="button"]')) {
+        if (el.disabled || el.getAttribute('aria-disabled') === 'true' || !isVisible(el, vis)) continue;
+        const label = accessibleName(el);
+        if (!label || label.length > 40 || !ADD_RE.test(label) || ADD_SKIP.test(label) || (el.type || '').toLowerCase() === 'submit') continue;
+        if (!out.some((b) => b.el === el || b.label === label)) out.push({ el, label });
+      }
+    }
+    return out;
+  }
+  /** Buttons that add one item to a form each time (for example "Add skill"): [{ id, label }]. */
+  function listAdders() {
+    return addButtons().slice(0, 10).map((b) => ({ id: idOf(b.el), label: b.label, group: groupText(b.el) }));
+  }
+  const visibleTextInputs = () => { const vis = new Map(); return [...document.querySelectorAll('input,textarea,[role="combobox"]')].filter((el) => isTextInput(el) && !el.disabled && !el.readOnly && isVisible(el, vis)); };
+  /** The visible suggestion that matches the value: exact first; after a while, one that contains it. */
+  function matchingOption(input, value, waited) {
+    const vis = new Map();
+    const scope = document.getElementById(input.getAttribute('aria-controls') || input.getAttribute('aria-owns') || '') || document;
+    const opts = [...scope.querySelectorAll('[role="option"]')].filter((o) => isVisible(o, vis));
+    const w = normalize(value);
+    const texts = opts.map((o) => normalize(o.innerText || o.getAttribute('aria-label') || ''));
+    let i = texts.findIndex((t) => t === w);
+    if (i < 0 && waited > 1200) i = texts.findIndex((t) => t.startsWith(w));
+    if (i < 0 && waited > 2000) i = texts.findIndex((t) => t.includes(w));
+    return i >= 0 ? opts[i] : null;
+  }
+  /**
+   * For each value: click the "Add …" button, type the value into the field that appears and pick the
+   * matching suggestion (when the field offers a list). Never presses Enter, which could submit the form.
+   */
+  async function addItems({ id, label, values }) {
+    const results = [];
+    for (const value of values || []) {
+      const button = elOf(id) || addButtons().find((b) => b.label === label)?.el;
+      if (!button) { results.push({ value, ok: false, message: `the “${label}” button is not on the page now` }); continue; }
+      const before = new Set(visibleTextInputs());
+      button.scrollIntoView({ block: 'center', behavior: 'instant' });
+      mouseSequence(button);
+      const input = await waitFor(() => {
+        const a = document.activeElement;
+        if (isTextInput(a) && !before.has(a)) return a;
+        return visibleTextInputs().find((x) => !before.has(x));
+      }, 2500) || (isTextInput(document.activeElement) && !document.activeElement.value ? document.activeElement : null);
+      if (!input) { results.push({ value, ok: false, message: `no field appeared after clicking “${label}”` }); continue; }
+      input.focus();
+      if (input.isContentEditable) document.execCommand('insertText', false, value);
+      else setNativeValue(input, value);
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: value.slice(-1), bubbles: true }));
+      const option = await waitFor((waited) => matchingOption(input, value, waited), 3000);
+      if (option) {
+        mouseSequence(option);
+        flash(input);
+        results.push({ value, ok: true });
+      } else if (input.getAttribute('aria-autocomplete') || input.getAttribute('role') === 'combobox' || input.getAttribute('aria-controls')) {
+        results.push({ value, ok: false, message: 'typed, but no matching suggestion appeared: choose it on the page' });
+        break; // the open field would take the next value too
+      } else {
+        flash(input);
+        results.push({ value, ok: true });
+      }
+      await sleep(400);
+    }
+    return results;
+  }
+
   globalThis.__localAI = {
     version: VERSION,
     extract, findAll, moveHit, clearHighlights, highlightQuote, highlightBlocks,
-    listFields, fillFields, snapshot, perform, submitSearch, listItems, blocked
+    listFields, fillFields, listAdders, addItems, snapshot, perform, submitSearch, listItems, blocked
   };
 })();

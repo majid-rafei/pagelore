@@ -59,7 +59,7 @@ function logEntry(call, out) {
     case 'read_page': return `read_page${a.focus ? ` ${q(a.focus, 80)}` : ''} → ${out.raw ? `read ${q(first.replace(/^Title: /, ''), 120)}` : first}`;
     case 'find_elements': return `find_elements ${q(a.what, 80)} → ${out.raw ? 'element list shown (ids may have changed since)' : first}`;
     case 'search': return `search ${q(a.query, 100)} → ${first}`;
-    case 'act': return `act ${a.action || ''}${a.id != null ? ` #${a.id}` : ''}${a.value != null && a.action !== 'press_enter' ? ` ${q(a.value, 60)}` : ''} → ${first}`;
+    case 'act': return `act ${a.action || ''}${a.id != null ? ` #${a.id}` : ''}${a.value != null && a.action !== 'press_enter' ? ` ${q(a.value, 60)}${String(a.value).length > 60 ? ` (${String(a.value).length} characters)` : ''}` : ''} → ${first}`;
     default: return `${call.name}${a.url ? ` ${a.url}` : ''} → ${first}`;
   }
 }
@@ -376,6 +376,19 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
       if (mismatch) return `Error: ${mismatch}.`;
     }
     const value = a.value != null ? String(a.value) : undefined;
+    // Typing into the same field again and again (rewriting a description, say) is a loop: after the
+    // second time, a field is typed into again only after the user said something.
+    let retyped = null;
+    if (action === 'type' && !el.search) {
+      const key = `${normUrl(await browser.url().catch(() => '')) || ''}#${el.id}`;
+      const prev = typed.get(key);
+      retyped = prev && prev.turns === userTurns ? prev : null;
+      if (retyped && retyped.count >= 2) {
+        return `Not typed: you already typed into this field ${retyped.count} times (last at step ${retyped.step}) and it holds your text. ` +
+          'Do not rewrite it again: go on with the next field or part of the plan. If the user should decide about the text, use ask_user.';
+      }
+      typed.set(key, { count: (retyped?.count || 0) + 1, step: stepBase + currentStep, turns: userTurns });
+    }
     const text = `${action.replace('_', ' ')} ${el ? describeElement(el) : ''}${value && action !== 'press_enter' ? ` ← "${value}"` : ''}`;
     const risky = isRisky({ action }, el);
     if (confirmAll || risky) {
@@ -387,7 +400,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     const res = await browser.perform({ action, id, value });
     onEvent({ type: 'step', kind: res.ok ? 'action' : 'error', text: `${res.ok ? '✓' : '✗'} ${res.message}` });
     elements = new Map();
-    return `${res.ok ? 'Done' : 'Failed'}: ${res.message}. Page now: ${await browser.url()}`;
+    return `${res.ok ? 'Done' : 'Failed'}: ${res.message}. Page now: ${await browser.url()}` +
+      (retyped && res.ok ? `\nYou already typed into this field at step ${retyped.step}; it now holds this text. Do not rewrite it again unless the user asks for a change: go on with the next field.` : '');
   }
 
   async function runTool(call) {
@@ -490,6 +504,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
         onEvent({ type: 'ask', question: q });
         const answer = String(await ui.ask(q) || '').trim();
         onEvent({ type: 'step', kind: 'user', text: `You: ${answer || '(no answer)'}` });
+        if (answer) userTurns++;
         return { text: answer ? `The user answered: ${answer}` : 'The user gave no answer. Continue as best you can or finish.' };
       }
       default:
@@ -521,6 +536,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   const openPlan = () => state.plan.filter((s) => s.status === 'pending' || s.status === 'in_progress').map((s) => s.title).join('; ').slice(0, 300);
 
   const seen = new Map(); // tool call + page → first step, to point out repeats
+  const typed = new Map(); // page + field → { count, step, turns }: how often the agent typed into it
+  let userTurns = 0; // messages and answers from the user so far (a new one allows retyping a field)
   let draftAnswer = ''; // the longest text the model wrote without calling finish: the answer if it never does
   let wrapUp = false; // the site blocked us, or the user refused more steps: finish with what was found
   let moreStepsRefused = false;
@@ -531,7 +548,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     await ui.waitIfPaused?.(); // the user paused: wait here, between steps
     if (signal?.aborted) throw new DOMException('Stopped', 'AbortError');
     for (const m of ui.takeMessages()) {
-      userMessages.push(m); newMessages++; see(m);
+      userMessages.push(m); newMessages++; userTurns++; see(m);
       onEvent({ type: 'step', kind: 'user', text: `You: ${m}` });
     }
     // The steps are used up while work is left: the user decides (more steps, or finish with what was found).
@@ -598,9 +615,10 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
       if (out.raw || ['open_url', 'act', 'ask_user'].includes(call.name)) see(out.text);
       // Opening the same URL, reading the same page or making the same search twice gives nothing new:
       // say so, in the result and in the log. An action can change the page, so reads count again after it.
-      if (call.name === 'act') for (const k of seen.keys()) if (!k.startsWith('open ')) seen.delete(k);
+      if (call.name === 'act') for (const k of seen.keys()) if (!k.startsWith('open ') && !k.startsWith('file ')) seen.delete(k);
       let first = 0;
       const key = call.name === 'open_url' ? `open ${call.args?.url}`
+        : call.name === 'read_file' && out.raw ? `file ${out.text.split('\n')[0]}`
         : call.name === 'read_page' ? `read ${await browser.url().catch(() => '')}`
           : ['find_elements', 'search'].includes(call.name) ? `${call.name} ${call.raw} ${await browser.url().catch(() => '')}` : '';
       if (key) {
@@ -608,7 +626,10 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
         if (!first) seen.set(key, stepBase + step);
       }
       const repeat = first ? ` (repeat of step ${first})` : '';
-      const text = first ? `${out.text}\n\nYou already did this at step ${first}; your notes have what it gave. Do not repeat it: continue with something new, or finish.` : out.text;
+      const text = !first ? out.text : call.name === 'read_file'
+        ? `${out.text}\n\nYou already read this at step ${first}. Write what you need from it with write_notes now, then use it. ` +
+          'If what you are looking for is not in it, do not read it again: tell the user what is missing with ask_user.'
+        : `${out.text}\n\nYou already did this at step ${first}; your notes have what it gave. Do not repeat it: continue with something new, or finish.`;
       lastStep.push({ role: 'tool', tool_call_id: call.id, content: out.raw ? `${text}\n\n(Shown for this step only: note what you need now.)` : text });
       lines.push(logEntry(call, out) + repeat);
     }

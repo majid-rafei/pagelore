@@ -127,23 +127,22 @@
     <details id="historyBox" class="history-box">
       <summary>History <span id="historyCount" class="count"></span></summary>
       <ol id="historyList" class="history-list"></ol>
-      <p class="hint">Saved in this browser only, with the questions, answers and form values (which can include your saved info), and in chats the text of the attached files (attached again when you open the chat). Click one to open it in its tab: chats continue from there. <button id="deleteAllHistory" class="text-button">Delete all</button></p>
+      <p class="hint">Saved in this browser only, with the questions, answers and form values (which can include your saved info), and in chats and form fills the text of the attached files (attached again when you open the entry). Click one to open it in its tab: chats continue from there. <button id="deleteAllHistory" class="text-button">Delete all</button></p>
     </details>
-    <nav class="tabs" role="tablist">
-      <button role="tab" data-tab="chat" class="active">Chat</button>
-      <button role="tab" data-tab="summarize">Summarize</button>
-      <button role="tab" data-tab="search">Search</button>
-      <button role="tab" data-tab="form">Form</button>
-    </nav>
-
-    <div class="attachments">
-      <label class="attach-btn" title="Attach PDF, DOCX or TXT files. They are read in the browser and used as extra context by Chat, Form and Summarize.">
+    <div class="attachments" title="Shared by all tabs">
+      <label class="attach-btn" title="Attach PDF, DOCX or TXT files. They are read in the browser and used by every tab (Chat, Summarize and Form) until you remove them.">
         📎 Attach file
         <input type="file" id="fileInput" multiple hidden
           accept=".pdf,.docx,.txt,.md,.csv,.json,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
       </label>
       <div id="attachList" class="chips"></div>
     </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="chat" class="active">Chat</button>
+      <button role="tab" data-tab="summarize">Summarize</button>
+      <button role="tab" data-tab="search">Search</button>
+      <button role="tab" data-tab="form">Form</button>
+    </nav>
 
     <section class="panel hidden" data-panel="summarize">
       <label class="inline">Summarize
@@ -187,6 +186,10 @@
       <div id="fillPreview" class="card preview hidden">
         <div class="row"><strong>Review before applying</strong><button id="applyFill" class="small">Apply selected</button></div>
         <div id="fillItems"></div>
+        <div class="row followup">
+          <textarea id="fillFollowup" dir="auto" rows="1" placeholder="Ask for a change, e.g. “also fill Skills” or “use another project”"></textarea>
+          <button id="refineFill" class="small">Update</button>
+        </div>
         <p class="hint">Passwords, payment card and file fields are never touched. The form is never submitted.</p>
       </div>
     </section>

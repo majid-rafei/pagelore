@@ -6,7 +6,7 @@ import { PageHandle, PageAccessError, requestAllSitesAccess } from './page.js';
 import { summarizePage } from './features/summarize.js';
 import { relevantPassages, citedSources } from './features/passages.js';
 import { smartSearch } from './features/search.js';
-import { fieldsToWrite, proposeFill, writingContext } from './features/form.js';
+import { fieldsToWrite, followUpTargets, proposeFill, writingContext } from './features/form.js';
 import { runAgent, tabBrowser, siteOf } from './features/agent.js';
 import { renderMarkdown } from './markdown.js';
 import { listHistory, saveHistory, patchHistory, deleteHistory, deleteAllHistory, newHistoryId, HISTORY_TYPES } from './history.js';
@@ -32,6 +32,11 @@ template.replaceWith(sessionSlot);
 
 /** First n characters without splitting an emoji or other surrogate pair. */
 const clip = (text, n) => Array.from(String(text || '')).slice(0, n).join('');
+/** The label of a form's "Add …" button without a leading "+" ("+ Add skill" → "Add skill"). */
+const addName = (adder) => String(adder.label || '').replace(/^[\s+]+/, '');
+const fieldName = (f) => f.label || f.name || `Field ${f.id}`;
+// The same field after the site redrew the form (its id changes, its locator does not).
+const fieldKey = (f) => (f.locator ? `${f.locator.key}#${f.locator.nth}` : `id${f.id}`);
 
 const sessions = new Map(); // tabId -> Session
 let shown = null;           // Session currently displayed
@@ -417,8 +422,9 @@ class Session {
       const page = await handle.call('extract', { maxChars: 20000 }).catch(() => null);
       pageContext = writingContext(page);
     }
+    const adders = await handle.call('listAdders').catch(() => []);
     const proposals = await proposeFill({
-      fields, instruction, profile, pageContext, lang: settings.lang, verify: settings.verifyWritten, signal, onStatus: (t) => this.setStatus(t),
+      fields, adders, instruction, profile, pageContext, lang: settings.lang, verify: settings.verifyWritten, signal, onStatus: (t) => this.setStatus(t),
       documentText: files.allText(),
       getExcerpts: (query, maxChars) => files.relevantExcerpts(query, maxChars).map((p) => `[${p.file}] ${p.text}`).join('\n…\n')
     });
@@ -426,70 +432,233 @@ class Session {
     const failed = proposals.unwritten?.length
       ? proposals.unwritten.map((u) => `\n\nCould not write “${u.label}”: the model's text was unusable${u.output ? ` (it wrote: “${u.output}”)` : ' (it wrote nothing)'}. Run it again, or try another model.`).join('')
       : '';
-    if (!proposals.length) { this.setOutput(`Found ${fields.length} field(s), but none matched the information you provided.${failed}`); return; }
-    this.pendingFill = { handle, proposals };
-    this.$('fillItems').replaceChildren(...proposals.map((p, i) => {
+    // Fields that already hold a value but got no proposal (often left from an earlier fill): cleared
+    // unless the user unticks them, so values from another entry do not stay in the form.
+    // Only fields of a form or dialog that has a proposal: never a language picker or search box elsewhere on the page.
+    const proposed = new Set(proposals.map((p) => p.field.id));
+    const boxes = new Set(proposals.map((p) => p.field.box).filter(Boolean));
+    const clears = fields.filter((f) => !proposed.has(f.id) && !f.search && f.box && boxes.has(f.box) && (
+      (['text', 'textarea'].includes(f.kind) && String(f.value || '').trim()) ||
+      (f.kind === 'select' && f.value && f.options?.length && f.value !== f.options[0])));
+    const adds = proposals.adds || [];
+    // "Add …" buttons with nothing found get an empty row too (unticked): the user sees the button was found,
+    // and can type items or ask for them in a follow-up.
+    const emptyAdds = adders.filter((a) => !adds.some((x) => x.adder.id === a.id)).map((adder) => ({ kind: 'add', adder, values: [], on: false }));
+    const items = [...proposals.map((p) => ({ kind: 'fill', ...p })), ...clears.map((field) => ({ kind: 'clear', field })),
+      ...adds.map((a) => ({ kind: 'add', ...a })), ...emptyAdds];
+    const noSource = !profile.trim() && !files.hasAttachments()
+      ? 'No file is attached and no info is saved, so values could come only from your request. Attach your CV or document (📎; attached files are removed when the extension is reloaded) and scan again.\n\n' : '';
+    const skipped = proposals.ruledOut?.length ? `Left out as your request says: ${proposals.ruledOut.map((x) => `“${x}”`).join(', ')}.\n` : '';
+    const about = `${noSource}${proposals.subject ? `Filled for: “${proposals.subject}”. To fill it for another item, name it in your request and scan again.\n` : ''}${skipped}${proposals.subject || skipped ? '\n' : ''}`;
+    if (!proposals.length && !adds.length) {
+      this.setOutput(`${about}Found ${fields.length} field(s), but none matched the information you provided.${failed}`);
+      return;
+    }
+    this.pendingFill = { handle, items, instruction, choice: proposals.choice };
+    this.renderFillRows();
+    const parts = [`Prepared ${proposals.length} of ${fields.length} field(s)`,
+      clears.length && `${clears.length} filled field(s) without a suggestion will be cleared`,
+      adds.length && `${adds.reduce((n, a) => n + a.values.length, 0)} item(s) to add with ${adds.map((a) => `“${addName(a.adder)}”`).join(', ')}`].filter(Boolean);
+    this.setOutput(`${about}${parts.join('; ')}. Review and edit the values, then click “Apply selected”. Nothing has been entered yet.${failed}`);
+    this.rememberFill(instruction.trim() || 'Fill the form', `${about}Values prepared for ${proposals.length} of ${fields.length} field(s):\n\n` +
+      `${proposals.map((p) => `${fieldName(p.field)}: ${p.value}`).join('\n')}` +
+      `${adds.map((a) => `\n${addName(a.adder)}: ${a.values.join(', ')}`).join('')}${failed}`, instruction);
+  }
+
+  /** The review rows of the prepared values (this.pendingFill.items). */
+  renderFillRows() {
+    this.$('fillItems').replaceChildren(...this.pendingFill.items.map((it, i) => {
       const row = document.createElement('div');
-      row.className = 'fill-item';
+      row.className = `fill-item${it.kind === 'clear' ? ' clear' : ''}`;
       const cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.checked = true; cb.dataset.index = i;
+      cb.type = 'checkbox'; cb.checked = it.on !== false; cb.dataset.index = i;
       const label = document.createElement('b');
-      label.textContent = `${p.field.label || p.field.name || `Field ${p.field.id}`}${p.field.required ? ' *' : ''}`;
+      const src = document.createElement('span');
+      src.className = 'src';
       let input;
-      if (p.field.options) {
-        input = document.createElement('select');
-        input.append(...p.field.options.map((o) => new Option(o, o, false, o === p.value)));
-      } else if (p.field.kind === 'textarea') {
+      if (it.kind === 'add') {
+        label.textContent = addName(it.adder);
         input = document.createElement('textarea');
-        input.rows = p.source === 'written' ? 8 : 3; input.value = p.value; input.dir = 'auto';
+        input.rows = Math.min(8, it.values.length + 1); input.value = it.values.join('\n'); input.dir = 'auto';
+        src.textContent = it.values.length ? `one item per line · clicks “${addName(it.adder)}” for each and picks the matching suggestion`
+          : 'nothing found in your info · type items, one per line, or ask for them below';
       } else {
-        input = document.createElement('input');
-        input.type = 'text'; input.value = p.value; input.dir = 'auto';
+        const f = it.field;
+        label.textContent = `${fieldName(f)}${f.required && !/\*\s*$/.test(fieldName(f)) ? ' *' : ''}`;
+        const value = it.kind === 'clear' ? '' : it.value;
+        if (f.options) {
+          input = document.createElement('select');
+          input.append(...f.options.map((o, k) => new Option(o, o, false, it.kind === 'clear' ? k === 0 : o === value)));
+        } else if (f.kind === 'textarea') {
+          input = document.createElement('textarea');
+          input.rows = it.source === 'written' ? 8 : 3; input.value = value; input.dir = 'auto';
+        } else {
+          input = document.createElement('input');
+          input.type = 'text'; input.value = value; input.dir = 'auto';
+        }
+        const kind = f.kind === 'text' ? f.type : f.kind;
+        if (it.kind === 'clear') {
+          if (!f.options) input.placeholder = '(empty)';
+          src.textContent = `${kind} · not suggested · now “${String(f.value).length > 80 ? `${String(f.value).slice(0, 80)}…` : f.value}”: it will be cleared. Untick to keep it.`;
+        } else {
+          src.textContent = `${kind} · from ${{ profile: 'your saved info', file: 'an attached file', model: 'the model', you: 'you', written: 'written by the model, check it' }[it.source] || it.source}`;
+        }
       }
       input.dataset.index = i;
       input.style.gridColumn = '2';
-      const src = document.createElement('span');
-      src.className = 'src';
-      src.textContent = `${p.field.kind === 'text' ? p.field.type : p.field.kind} · from ${{ profile: 'your saved info', file: 'an attached file', model: 'the model', written: 'written by the model, check it' }[p.source] || p.source}`;
       row.append(cb, label, input, src);
-      if (p.source === 'written' && (p.issues || p.checkFailed)) {
+      if (it.source === 'written' && (it.issues || it.checkFailed)) {
         // What the check against the user's info found and fixed (API models only).
         const note = document.createElement('div');
         note.className = 'src check-note';
-        note.textContent = p.checkFailed ? 'The check against your info could not run: read this text carefully.' : p.issues.length
-          ? `Check found ${p.issues.length} problem(s) and fixed them:\n${p.issues.map((x) => `• ${x.quote ? `“${x.quote}”: ` : ''}${x.problem}`).join('\n')}`
+        note.textContent = it.checkFailed ? 'The check against your info could not run: read this text carefully.' : it.issues.length
+          ? `Check found ${it.issues.length} problem(s) and fixed them:\n${it.issues.map((x) => `• ${x.quote ? `“${x.quote}”: ` : ''}${x.problem}`).join('\n')}`
           : 'Checked against your info: no problems found.';
         row.append(note);
       }
       return row;
     }));
     this.$('fillPreview').classList.remove('hidden');
-    this.setOutput(`Prepared ${proposals.length} of ${fields.length} field(s). Review and edit the values, then click “Apply selected”. Nothing has been entered yet.${failed}`);
+  }
+  /** Reads the rows as the user edited them back into this.pendingFill.items. */
+  syncFillRows() {
+    const items = this.pendingFill?.items || [];
+    for (const r of this.$('fillItems').children) {
+      const it = items[Number(r.querySelector('[data-index]').dataset.index)];
+      if (!it) continue;
+      it.on = r.querySelector('input[type="checkbox"]').checked;
+      const v = r.querySelector('input[type="text"], textarea, select').value;
+      if (it.kind === 'add') it.values = v.split('\n').map((x) => x.trim()).filter(Boolean);
+      else if (it.kind === 'fill' && v !== it.value) Object.assign(it, { value: v, source: 'you' });
+      else if (it.kind === 'clear' && v.trim() && (!it.field.options || v !== it.field.options[0])) Object.assign(it, { kind: 'fill', value: v, source: 'you' });
+    }
+  }
+
+  /** Saves a scan or a follow-up as a turn of this panel's form-fill history entry. */
+  rememberFill(question, answer, instruction) {
     let host = ''; try { host = new URL(this.url).hostname.replace(/^www\./, ''); } catch { /* not a web page */ }
-    this.remember({ type: 'form', id: newHistoryId(), createdAt: Date.now(), url: this.url || '', title: instruction.trim() || `Form on ${host || 'a page'}`,
-      data: { instruction },
-      turns: [{ question: instruction.trim() || 'Fill the form', answer: `Values prepared for ${proposals.length} of ${fields.length} field(s):\n\n${proposals.map((p) => `${p.field.label || p.field.name || `Field ${p.field.id}`}: ${p.value}`).join('\n')}${failed}` }] });
+    // Scans in this panel, and scans after opening a saved form fill, continue the same history entry
+    // (one entry per session of filling forms, with a turn per scan), and keep the attached files with it.
+    this.formEntry ||= { id: newHistoryId(), createdAt: Date.now(), turns: [] };
+    this.formEntry.turns = [...this.formEntry.turns, { question, answer }].slice(-20);
+    const saved = this.attachments.saved();
+    this.remember({ type: 'form', id: this.formEntry.id, createdAt: this.formEntry.createdAt, url: this.url || '', title: instruction.trim() || `Form on ${host || 'a page'}`,
+      data: { instruction }, turns: this.formEntry.turns, ...(saved.length ? { files: saved } : {}) });
+  }
+
+  /**
+   * A follow-up to the prepared values ("also fill Skills"): fills the fields and "Add" buttons it is about,
+   * keeping the other rows as the user left them. Asking for another item fills the whole form again.
+   */
+  async doRefineFill(signal) {
+    const pending = this.pendingFill;
+    const text = this.$('fillFollowup').value.trim();
+    if (!pending || !text) return;
+    this.syncFillRows();
+    this.setStatus('Scanning form fields…');
+    const handle = await this.page();
+    pending.handle = handle;
+    const fields = await handle.call('listFields');
+    const adders = await handle.call('listAdders').catch(() => []);
+    const byKey = new Map(fields.map((f) => [fieldKey(f), f]));
+    for (const it of pending.items) {
+      if (it.field) it.field = byKey.get(fieldKey(it.field)) || it.field;
+      if (it.adder) it.adder = adders.find((a) => a.id === it.adder.id) || adders.find((a) => a.label === it.adder.label) || it.adder;
+    }
+    this.setStatus('Reading your follow-up…');
+    const t = await followUpTargets({ text, fields, adders, subject: pending.choice?.subject, signal });
+    if (t.redo) {
+      // Another item, or everything again: the whole form, with the follow-up added to the request.
+      const box = this.$('formInstruction');
+      box.value = `${box.value.trim()}\n${text}`.trim();
+      this.$('fillFollowup').value = '';
+      return this.doPrepareFill(signal);
+    }
+    let tf = fields.filter((f) => t.fields?.includes(f.id));
+    let ta = adders.filter((a) => t.adders?.includes(a.id));
+    if (!tf.length && !ta.length) {
+      // Not clear which: the fields still without a value, and the "Add" buttons with nothing to add.
+      const filled = new Set(pending.items.filter((it) => it.kind === 'fill' && String(it.value || '').trim()).map((it) => fieldKey(it.field)));
+      tf = fields.filter((f) => !f.search && !filled.has(fieldKey(f)) && !String(f.value || '').trim());
+      ta = adders.filter((a) => !pending.items.some((it) => it.kind === 'add' && it.adder.id === a.id && it.values.length));
+    }
+    const instruction = `${pending.instruction.trim()}\nFollow-up: ${text}`.trim();
+    const files = this.attachments;
+    let pageContext = '';
+    if (fieldsToWrite(tf, instruction).length) pageContext = writingContext(await handle.call('extract', { maxChars: 20000 }).catch(() => null));
+    const res = await proposeFill({
+      fields: tf, adders: ta, instruction, profile: settings.profile, pageContext, lang: settings.lang, verify: settings.verifyWritten,
+      choice: pending.choice, signal, onStatus: (x) => this.setStatus(x), documentText: files.allText(),
+      getExcerpts: (query, maxChars) => files.relevantExcerpts(query, maxChars).map((p) => `[${p.file}] ${p.text}`).join('\n…\n')
+    });
+    this.setStatus('');
+    const changed = [], missing = [];
+    for (const f of tf) {
+      const p = res.find((x) => x.field.id === f.id);
+      if (!p) { missing.push(fieldName(f)); continue; }
+      const row = { kind: 'fill', ...p, on: true };
+      const i = pending.items.findIndex((it) => it.field && fieldKey(it.field) === fieldKey(f));
+      if (i >= 0) pending.items[i] = row; else pending.items.push(row);
+      changed.push(`${fieldName(f)}: ${String(p.value).length > 60 ? `${String(p.value).slice(0, 60)}…` : p.value}`);
+    }
+    for (const a of ta) {
+      const got = (res.adds || []).find((x) => x.adder.id === a.id)?.values || [];
+      if (!got.length) { missing.push(addName(a)); continue; }
+      const row = pending.items.find((it) => it.kind === 'add' && it.adder.id === a.id);
+      const values = [...new Set([...(row?.values || []), ...got])];
+      if (row) Object.assign(row, { adder: a, values, on: true }); else pending.items.push({ kind: 'add', adder: a, values, on: true });
+      changed.push(`${addName(a)}: ${got.join(', ')}`);
+    }
+    pending.instruction = instruction; // a later follow-up builds on this one
+    this.$('fillFollowup').value = '';
+    this.renderFillRows();
+    const out = [changed.length ? `Updated:\n${changed.map((c) => `• ${c}`).join('\n')}` : 'Nothing new was found.',
+      missing.length && `Nothing found in your info for: ${missing.map((m) => `“${m}”`).join(', ')}. Type the values in their rows, or say in a follow-up where they are (for example which section of your CV).`,
+      'The other rows are as you left them. Review, then click “Apply selected”.'].filter(Boolean).join('\n\n');
+    this.setOutput(out);
+    this.rememberFill(text, out, this.$('formInstruction').value);
   }
 
   async doApplyFill() {
     const pending = this.pendingFill;
     if (!pending) return;
-    const rows = [...this.$('fillItems').children];
-    const updates = rows.filter((r) => r.querySelector('input[type="checkbox"]').checked).map((r) => {
+    const rows = [...this.$('fillItems').children].map((r) => {
       const i = Number(r.querySelector('[data-index]').dataset.index);
-      const valueEl = r.querySelector('input[type="text"], textarea, select');
-      return { id: pending.proposals[i].field.id, value: valueEl.value };
+      return { r, it: pending.items[i], on: r.querySelector('input[type="checkbox"]').checked, value: r.querySelector('input[type="text"], textarea, select').value };
     });
-    const results = await pending.handle.call('fillFields', updates);
-    const failed = results.filter((r) => !r.ok);
-    rows.forEach((r) => {
-      const i = Number(r.querySelector('[data-index]').dataset.index);
-      const res = results.find((x) => x.id === pending.proposals[i].field.id);
-      r.classList.toggle('failed', !!res && !res.ok);
-      if (res && !res.ok) r.querySelector('.src').textContent = `Not applied: ${res.message}`;
-    });
-    this.setOutput(`Applied ${results.length - failed.length} value(s)${failed.length ? `, ${failed.length} failed (see above)` : ''}. Review the form before submitting it yourself.`);
-    if (!failed.length) { this.$('fillPreview').classList.add('hidden'); this.pendingFill = null; }
+    const updates = rows.filter((x) => x.on && x.it.kind !== 'add').map((x) => ({ id: x.it.field.id, locator: x.it.field.locator, value: x.value }));
+    const results = updates.length ? await pending.handle.call('fillFields', updates) : [];
+    let ok = results.filter((r) => r.ok).length;
+    let bad = results.length - ok;
+    for (const x of rows) {
+      if (x.it.kind === 'add') continue;
+      const res = results.find((y) => y.id === x.it.field.id);
+      x.r.classList.toggle('failed', !!res && !res.ok);
+      if (res && !res.ok) x.r.querySelector('.src').textContent = `Not applied: ${res.message}`;
+    }
+    // Then the items of the "Add …" buttons, one click each.
+    for (const x of rows.filter((y) => y.on && y.it.kind === 'add')) {
+      const values = x.value.split('\n').map((v) => v.trim()).filter(Boolean);
+      if (!values.length) continue;
+      this.setStatus(`Adding ${values.length} item(s) with “${addName(x.it.adder)}”…`);
+      const res = await pending.handle.call('addItems', { id: x.it.adder.id, label: x.it.adder.label, values });
+      const failedHere = res.filter((y) => !y.ok);
+      const skipped = values.length - res.length;
+      ok += res.length - failedHere.length;
+      bad += failedHere.length + skipped;
+      x.r.classList.toggle('failed', failedHere.length + skipped > 0);
+      if (failedHere.length || skipped) {
+        x.r.querySelector('.src').textContent = `${failedHere.map((y) => `“${y.value}”: ${y.message}`).join('; ')}${skipped ? `; ${skipped} not tried` : ''}`;
+        // Keep only what is left to add, so “Apply selected” can be tried again.
+        const done = new Set(res.filter((y) => y.ok).map((y) => y.value));
+        x.r.querySelector('textarea').value = values.filter((v) => !done.has(v)).join('\n');
+      } else {
+        x.r.querySelector('input[type="checkbox"]').checked = false;
+      }
+    }
+    this.setStatus('');
+    this.setOutput(`Applied ${ok} value(s)${bad ? `, ${bad} failed (see above)` : ''}. Review the form before submitting it yourself.`);
+    if (!bad) { this.$('fillPreview').classList.add('hidden'); this.pendingFill = null; }
   }
 
   log(entry) {
@@ -714,8 +883,11 @@ class Session {
         this.showTab('form');
         this.$('formInstruction').value = e.data?.instruction || '';
         this.$('fillPreview').classList.add('hidden'); this.pendingFill = null;
+        this.formEntry = { id: e.id, createdAt: e.createdAt, turns: [...e.turns] }; // the next scan continues this entry
+        this.attachments.restore(e.files); // the files attached when it was saved, attached again
         this.setOutput(last.answer);
-        this.setStatus(`Saved from ${when}. Open the form and click “Scan form & prepare values” to fill it again.`);
+        this.setStatus(`Saved from ${when}.${e.files?.length ? ` Its attached file${e.files.length > 1 ? 's are' : ' is'} attached again: ${e.files.map((f) => `📎 ${f.name}`).join(', ')}.` : ''} ` +
+          'Open the form and click “Scan form & prepare values” to fill it again.');
         break;
     }
     this.renderHistory();
@@ -936,6 +1108,7 @@ class Session {
       this.renderAttachments(list);
       // A file attached or removed in a saved chat: saved with it now (during a run, it is saved at the end).
       if (this.agentChat && !this.controller) patchHistory(this.agentChat.id, { files: this.attachments.saved() }).catch(() => {});
+      if (this.formEntry) patchHistory(this.formEntry.id, { files: this.attachments.saved() }).catch(() => {});
     });
     on('fileInput', 'change', (e) => { this.attachFiles([...e.target.files]); e.target.value = ''; });
 
@@ -952,6 +1125,8 @@ class Session {
     on('clearHits', 'click', () => { this.searchHandle?.call('clearHighlights').catch(() => {}); this.$('hitNav').classList.add('hidden'); });
     on('prepareFill', 'click', run(this.doPrepareFill));
     on('applyFill', 'click', run(this.doApplyFill, { needsModel: false }));
+    on('refineFill', 'click', run(this.doRefineFill));
+    on('fillFollowup', 'keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.run(this.doRefineFill); } });
     on('runTask', 'click', () => {
       // Host access for the whole site (subdomains included) lets the agent move between its pages.
       // Permission requests need the click (user gesture), so it starts here, before anything async.
