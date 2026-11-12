@@ -70,7 +70,7 @@
       </label>
       <p class="hint">The agent opens pages at most this often, to keep the load on websites low.</p>
       <label class="inline">Compact its memory above
-        <input id="compactAt" class="wide-number" type="number" min="0" step="1000" placeholder="200000" /> tokens
+        <input id="compactAt" class="wide-number" type="number" min="0" step="1000" placeholder="60000" /> tokens
       </label>
       <p class="hint">In a long task or chat the agent's requests grow (its log, notes and the earlier conversation). When a request would be larger than this, one extra request first summarizes the older part, so the next requests are smaller and cheaper. The latest steps, the plan and the saved results are kept as they are. 0 turns it off; smaller values (for example 16000) make long tasks cheaper but summarize sooner.</p>
       </section>
@@ -158,7 +158,14 @@
         </label>
         <button id="summarize" class="grow">Summarize</button>
       </div>
-      <p class="hint">Long pages and documents are summarized in parts, then merged.</p>
+      <div class="row followup">
+        <textarea id="summaryAsk" dir="auto" rows="1" class="grow" placeholder="Focus, or a follow-up: “shorter”, “in German”, “more on the prices”, a question… (Enter)"></textarea>
+        <button id="summaryFollow" class="small">Ask</button>
+      </div>
+      <div data-conv="q" class="agent-question hidden" dir="auto"></div>
+      <div data-conv="slot" class="conv-slot"></div>
+      <details data-conv="earlier" class="agent-box hidden" open><summary>Earlier in this conversation (newest first) <span class="count"></span></summary><div data-conv="list" class="history"></div></details>
+      <p class="hint">Long pages and documents are summarized in parts, then merged. Follow-ups build on the last answer; New starts over.</p>
     </section>
 
     <section class="panel hidden" data-panel="search">
@@ -172,6 +179,9 @@
         <button id="nextHit" class="secondary small">↓ Next</button>
         <button id="clearHits" class="text-button">Clear</button>
       </div>
+      <div data-conv="q" class="agent-question hidden" dir="auto"></div>
+      <div data-conv="slot" class="conv-slot"></div>
+      <details data-conv="earlier" class="agent-box hidden" open><summary>Earlier in this conversation (newest first) <span class="count"></span></summary><div data-conv="list" class="history"></div></details>
       <p class="hint">Exact matches are highlighted instantly; otherwise the model finds the most relevant passage.</p>
     </section>
 
@@ -182,16 +192,18 @@
         <p class="hint">Stored only in this browser (chrome.storage.local). Lines in “key: value” form are matched to fields directly. Attached files are used too.</p>
       </details>
       <textarea id="formInstruction" dir="auto" rows="2" placeholder="Optional instruction, e.g. “use my work email, subject: refund request”"></textarea>
-      <button id="prepareFill">Scan form &amp; prepare values</button>
+      <div class="row">
+        <button id="prepareFill" class="grow">Scan form &amp; prepare values</button>
+        <button id="refineFill" class="secondary hidden" title="Change the prepared values as the box says (Enter)">Update values</button>
+      </div>
       <div id="fillPreview" class="card preview hidden">
         <div class="row"><strong>Review before applying</strong><button id="applyFill" class="small">Apply selected</button></div>
         <div id="fillItems"></div>
-        <div class="row followup">
-          <textarea id="fillFollowup" dir="auto" rows="1" placeholder="Ask for a change, e.g. “also fill Skills” or “use another project”"></textarea>
-          <button id="refineFill" class="small">Update</button>
-        </div>
         <p class="hint">Passwords, payment card and file fields are never touched. The form is never submitted.</p>
       </div>
+      <div data-conv="q" class="agent-question hidden" dir="auto"></div>
+      <div data-conv="slot" class="conv-slot"></div>
+      <details data-conv="earlier" class="agent-box hidden" open><summary>Earlier in this conversation (newest first) <span class="count"></span></summary><div data-conv="list" class="history"></div></details>
     </section>
 
     <section class="panel" data-panel="chat">
@@ -217,8 +229,8 @@
         </div>
       </div>
       <!-- While this tab is shown, the Assistant card (status, time/cost, answer) moves here (main.js). -->
-      <div id="agentCurrentQ" class="agent-question hidden" dir="auto"></div>
-      <div id="agentAssistantSlot"></div>
+      <div data-conv="q" class="agent-question hidden" dir="auto"></div>
+      <div data-conv="slot" class="conv-slot"></div>
       <div id="agentAsk" class="card agent-ask hidden">
         <div id="agentQuestion" dir="auto"></div>
       </div>
@@ -230,24 +242,23 @@
       <details id="agentNotesBox" class="agent-box hidden"><summary>Notes <span class="count"></span></summary><ol id="agentNotes" class="notes"></ol></details>
       <details id="agentResultsBox" class="agent-box hidden" open><summary>Results <span class="count"></span></summary><ol id="agentResults" class="results"></ol></details>
       <details id="agentStepsBox" class="agent-box steps-box" open><summary>Steps <span id="agentStepCount" class="count"></span><button type="button" class="sort-toggle steps-order" title="Change the order of the steps">↑↓ Newest first</button></summary><ol id="taskLog" class="log"></ol></details>
-      <details id="agentHistoryBox" class="agent-box hidden" open><summary>Earlier in this conversation (newest first) <span id="agentHistoryCount" class="count"></span></summary><div id="agentHistory" class="history"></div></details>
+      <details data-conv="earlier" class="agent-box hidden" open><summary>Earlier in this conversation (newest first) <span class="count"></span></summary><div data-conv="list" class="history"></div></details>
       <p class="hint">Answers use this page and any attached files. For a task it plans, works step by step in this tab (opening pages of the site, clicking, typing), asks you when it needs something, and reads messages you send while it works. Ask more in the same box: it remembers the conversation (New chat starts over). Risky actions (submit, pay, delete, send…) always ask for confirmation.</p>
     </section>
 
-    <div id="assistantHome"></div>
     <section id="assistantCard" class="card output-wrap">
       <div class="row">
         <strong>Assistant</strong>
         <span>
           <button id="stop" class="text-button hidden">■ Stop</button>
           <button id="copy" class="text-button">Copy</button>
-          <button id="clear" class="text-button">Clear</button>
+          <button id="clear" class="text-button" title="Start a new conversation in this tab (the old one stays in the history)">New</button>
         </span>
       </div>
       <div id="status" class="hint"></div>
       <div id="meter" class="meter hidden" title="Time and, for API models, requests, tokens and cost of the last run"></div>
       <div class="answer-tools">
-        <button id="exportChat" class="text-button small hidden" title="This chat as a JSON file: questions, answers, steps, plan, notes, results and the agent's memory (and the model log, if kept)">Export chat (JSON)</button>
+        <button id="exportChat" class="text-button small hidden" title="This conversation as a JSON file: questions, answers, steps, plan, notes, results and the agent's memory (and the model log, if kept)">Export (JSON)</button>
         <button id="downloadLog" class="text-button small hidden" title="The requests sent to the model for this answer and its replies, exactly as they were, as a text file (one file per question)">Download model log</button>
       </div>
       <div id="output" class="output" dir="auto">Ready. Page content is treated as untrusted input.</div>

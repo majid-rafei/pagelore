@@ -17,7 +17,7 @@ const SYSTEM = (lang) =>
  * Map-reduce summarization so long articles fit a small model's context:
  * 1) take notes on each chunk, 2) merge the notes into the final summary (streamed).
  */
-export async function summarizePage({ page, length = 'medium', lang = 'auto', signal, onStatus, onText }) {
+export async function summarizePage({ page, length = 'medium', lang = 'auto', focus = '', signal, onStatus, onText }) {
   const content = page.blocks.filter((b) => !b.chrome);
   const blocks = content.length > 3 ? content : page.blocks;
   const fullText = blocks.map((b) => b.text).join('\n');
@@ -52,6 +52,25 @@ export async function summarizePage({ page, length = 'medium', lang = 'auto', si
 
   return chat([
     { role: 'system', content: SYSTEM(outLang) + styleGuide() },
-    { role: 'user', content: `${header}Content:\n"""\n${forModel(material)}\n"""\n\nSummarize this page as ${spec.words}. Start with one sentence saying what the page is about. Write in ${outLang || 'the same language as the content'}.` }
+    { role: 'user', content: `${header}Content:\n"""\n${forModel(material)}\n"""\n\nSummarize this page as ${spec.words}. Start with one sentence saying what the page is about.${focus ? ` The user asks: “${focus}”. Follow it (what to focus on, length, form) as far as the content allows.` : ''} Write in ${outLang || 'the same language as the content'}.` }
   ], { maxTokens: spec.tokens, signal, onText });
+}
+
+/**
+ * A follow-up in a summary conversation: “shorter”, “in German”, “more on the prices”, or a question.
+ * The model gets the conversation so far, the current answer and the passages of the source most relevant
+ * to the request; it rewrites the summary when asked for a change, else answers from the content.
+ */
+export async function followUpSummary({ request, previous, earlier = [], excerpts = '', title = '', lang = 'auto', signal, onText }) {
+  // A chosen output language holds; else the language the user asks for, or writes in.
+  const outLang = lang && lang !== 'auto' ? await outputLanguage(lang, '') : 'the language the user asks for, else the language of the user\'s message';
+  const before = earlier.slice(-4).map((t) => `User: ${t.question}\nAssistant: ${t.answer}`).join('\n\n').slice(-3000);
+  return chat([
+    { role: 'system', content: SYSTEM(outLang) + styleGuide() + ' The user is talking with you about a summary you wrote.' },
+    { role: 'user', content: `${title ? `Title: ${title}\n` : ''}${before ? `Earlier in this conversation:\n"""\n${forModel(before)}\n"""\n\n` : ''}` +
+      `Your last answer:\n"""\n${forModel(previous)}\n"""\n\n${excerpts ? `Passages of the content relevant to the request:\n"""\n${forModel(excerpts)}\n"""\n\n` : ''}` +
+      `The user now says: “${request}”\n\nIf this asks for a change to the summary (length, language, focus, form), write the whole changed summary. ` +
+      'If it is a question, answer it from the content and your last answer; say so when the content does not tell. ' +
+      `Write in ${outLang}.` }
+  ], { maxTokens: 800, signal, onText });
 }

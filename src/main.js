@@ -3,7 +3,7 @@ import { formatModelLog } from './model-log.js';
 import { firstModel, bindModel, bindReasoning, modelSpec, modelChoices, setApiModels, onUsage, onModelCall } from './llm.js';
 import { loadApiModels, saveApiModels, onApiModelsChange, newApiModelId, normalizeBaseUrl, hostOf, requestHostAccess, listRemoteModels, remoteChat, REASONING_LEVELS, reasoningIgnored } from './api-models.js';
 import { PageHandle, PageAccessError, requestAllSitesAccess } from './page.js';
-import { summarizePage } from './features/summarize.js';
+import { summarizePage, followUpSummary } from './features/summarize.js';
 import { relevantPassages, citedSources } from './features/passages.js';
 import { smartSearch } from './features/search.js';
 import { fieldsToWrite, followUpTargets, proposeFill, writingContext } from './features/form.js';
@@ -21,7 +21,7 @@ import { WRITING_STYLES, DEFAULT_STYLE, CUSTOM_STYLE_MAX, setWritingStyle } from
 
 const $ = (id) => document.getElementById(id); // global (non-session) elements
 // settings.model is the model of the last choice: new tabs start with it.
-const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 200000, logModelCalls: false, maxSteps: 25 };
+const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 60000, logModelCalls: false, maxSteps: 25 };
 
 // The session markup in sidepanel.html is a template: each tab gets a clone, and only the clone of
 // the active tab is attached to the document (so element ids stay unique). Detached clones keep
@@ -55,7 +55,7 @@ async function loadSettings() {
   $('verifyWritten').checked = settings.verifyWritten;
   $('logModelCalls').checked = settings.logModelCalls;
   $('agentPace').value = String(settings.agentPace);
-  $('compactAt').value = String(settings.compactAt ?? 200000);
+  $('compactAt').value = String(settings.compactAt ?? 60000);
   settings.maxSteps = Math.min(300, Math.max(3, Math.round(Number(settings.maxSteps)) || 25));
   for (const s of sessions.values()) s.$('maxSteps').value = String(settings.maxSteps); // tabs opened before the settings loaded
   if (!WRITING_STYLES[settings.writingStyle]) settings.writingStyle = DEFAULT_STYLE;
@@ -170,8 +170,30 @@ const parseOr = (text) => { try { return JSON.parse(text); } catch { return text
 const fileStem = (type, title) => `${type}-${String(title || type).replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 40) || type}-${stamp()}`;
 
 const CHAT_TYPES = new Set(['chat', 'agent', 'ask']); // 'agent' and 'ask': entries saved before the two tabs became Chat
+// Every tab is a conversation (one history entry, a turn per question); each has its own agent and tools.
+const TABS = ['chat', 'summarize', 'search', 'form'];
+const TAB_OF_TYPE = { chat: 'chat', agent: 'chat', ask: 'chat', summarize: 'summarize', search: 'search', form: 'form' };
+const FILE_TABS = new Set(['chat', 'summarize', 'form']); // conversations that use the attached files (saved with them)
+const READY = 'Ready. Page content is treated as untrusted input.';
+const filesNote = (files) => (files?.length ? ` Its attached file${files.length > 1 ? 's are' : ' is'} attached again: ${files.map((f) => `📎 ${f.name}`).join(', ')}.` : '');
 
 // ---------- One tab's session ----------
+/** Time and, for API models, requests, tokens and cost of a run. */
+function meterText(m) {
+  const secs = Math.round(((m.end || Date.now()) - m.start) / 1000);
+  const parts = [`⏱ ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`];
+  if (m.requests) {
+    parts.push(`${m.requests} request${m.requests > 1 ? 's' : ''}`);
+    parts.push(`${tokens(m.input)} tokens in${m.cached ? ` (${tokens(m.cached)} cached)` : ''}, ${tokens(m.output)} out`);
+    // Speed of a model on this computer (Ollama, LM Studio…): time spent generating, not the whole run.
+    if (m.local && m.localMs > 500 && m.localOut) parts.push(`${(m.localOut / (m.localMs / 1000)).toFixed(1)} tokens/s`);
+    if (m.local === m.requests) parts.push('no API cost');
+    else if (m.unpriced === m.requests - m.local) parts.push('cost unknown: add the prices in Settings → API models');
+    else parts.push(`${m.unpriced ? 'at least ' : ''}${dollars(m.cost)}`);
+  }
+  return parts.join(' · ');
+}
+
 class Session {
   constructor(tabId) {
     this.tabId = tabId;
@@ -193,26 +215,68 @@ class Session {
     this.askResolver = null;     // pending ask_user question of the agent
     this.inbox = [];             // messages the user sent to the running agent
     this.modelLog = [];          // model requests and replies of this tab (Settings → keep a log)
-    this.agentChat = null;       // { id, createdAt, url, turns, memory } of the agent conversation in this tab (saved, see chat-store.js)
     this.turnSteps = [];         // { type, text } of the steps of the current turn, kept with the conversation
     this.pages = [];             // { url, title } of the pages the user asked on (links under "Tab:", so they are not lost when the agent navigates)
     this.accessRequest = null;   // permission request started by the Run click
     this.goalPlaceholder = this.$('goal').placeholder;
+    this.formPlaceholder = this.$('formInstruction').placeholder;
+    // Each tab shows its own conversation in the Assistant card: what it shows is kept per tab, and a
+    // running task writes to its own tab even when another tab is open (see viewTab).
+    const start = modelChoices().length ? READY : '**To start, add a model** in Settings (⚙) → Models: a model on this computer with **Ollama** or **LM Studio** (free, nothing leaves your computer), or any OpenAI-compatible API.';
+    this.views = Object.fromEntries(TABS.map((t) => [t, { output: start, status: '', sources: [], handle: null, meter: null, meterText: '', hasLog: false }]));
+    this.convs = Object.fromEntries(TABS.map((t) => [t, null])); // { id, type, createdAt, url, title, turns, question, data } (agentChat is convs.chat)
+    this.tab = 'chat';
+    this.taskTab = null;         // the tab of the running task
     this.renderHistory();
     this.wire();
     this.root.querySelector('.tabs button.active')?.click(); // puts the Assistant card where the open tab wants it
-    if (!modelChoices().length) this.setOutput('**To start, add a model** in Settings (⚙) → Models: a model on this computer with **Ollama** or **LM Studio** (free, nothing leaves your computer), or any OpenAI-compatible API.');
   }
 
   $(id) { return this.root.querySelector(`#${id}`); }
   page() { return PageHandle.forTab(this.tabId); }
+  get agentChat() { return this.convs.chat; }
+  set agentChat(c) { this.convs.chat = c; }
 
   // ----- Output helpers -----
-  /** The answer area shows Markdown (headings, lists, tables…); `outputText` keeps the text as written. */
-  setOutput(text) { this.outputText = String(text ?? ''); renderMarkdown(this.$('output'), this.outputText); }
-  setStatus(text) { this.$('status').textContent = text || ''; }
+  /** The tab the output goes to: the running task's, else the open one. */
+  get viewTab() { return this.taskTab || this.tab; }
+  get outputText() { return this.views[this.viewTab].output; }
+  get meter() { return this.views[this.viewTab].meter; }
+  set meter(m) { this.views[this.viewTab].meter = m; }
+  /** The answer area shows Markdown (headings, lists, tables…); the view keeps the text as written. */
+  setOutput(text) {
+    const tab = this.viewTab;
+    this.views[tab].output = String(text ?? '');
+    if (tab === this.tab) renderMarkdown(this.$('output'), this.views[tab].output);
+  }
+  setStatus(text) {
+    const tab = this.viewTab;
+    this.views[tab].status = text || '';
+    if (tab === this.tab) this.$('status').textContent = text || '';
+  }
+  statusText() { return this.views[this.viewTab].status; }
   setSources(sources, handle) {
-    this.$('sources').replaceChildren(...(sources || []).map((s) => {
+    const tab = this.viewTab;
+    Object.assign(this.views[tab], { sources: sources || [], handle });
+    if (tab === this.tab) this.renderSources();
+  }
+  /** Shows the open tab's conversation in the Assistant card. */
+  renderView() {
+    const v = this.views[this.tab];
+    renderMarkdown(this.$('output'), v.output);
+    this.$('status').textContent = v.status;
+    this.renderSources();
+    this.renderMeter(this.tab);
+    this.$('exportChat').classList.toggle('hidden', !this.convs[this.tab]?.saved);
+    this.$('downloadLog').classList.toggle('hidden', !v.hasLog);
+  }
+  setHasLog(tab, has) {
+    this.views[tab].hasLog = has;
+    if (tab === this.tab) this.$('downloadLog').classList.toggle('hidden', !has);
+  }
+  renderSources() {
+    const { sources, handle } = this.views[this.tab];
+    this.$('sources').replaceChildren(...sources.map((s) => {
       const b = document.createElement('button');
       b.textContent = `[${s.n}] ${s.file ? `📎 ${s.file}: ` : ''}${clip(s.text, 50)}`;
       b.title = clip(s.text, 600);
@@ -274,13 +338,15 @@ class Session {
     if (this.controller) return;
     const controller = new AbortController();
     this.controller = controller;
+    this.taskTab = this.tab; // its output, meter and conversation stay with this tab
+    const tab = this.taskTab;
     this.notePage(this.url, this.title);
     bindModel(controller.signal, this.model);
     bindReasoning(controller.signal, this.reasoning);
     this.setBusy(true);
     renderGlobalBusy();
     // Time, and for API models requests, tokens and cost, shown live under the status line.
-    this.lastMeter = this.$('meter').classList.contains('hidden') ? '' : this.$('meter').textContent; // of the previous run
+    this.lastMeter = this.views[tab].meterText; // of the previous run (kept with the turn it belongs to)
     const meter = { start: Date.now(), end: 0, requests: 0, input: 0, cached: 0, output: 0, cost: 0, unpriced: 0, local: 0, localOut: 0, localMs: 0 };
     this.meter = meter;
     onUsage(controller.signal, (u) => {
@@ -293,10 +359,10 @@ class Session {
       const message = this.$('goal').value.trim();
       onModelCall(controller.signal, (c) => {
         // Chat: which conversation and which of its questions (0 = the first), for one log file per question.
-        const chat = this.agentChat ? { chat: this.agentChat.id, turn: this.agentChat.turns.length } : {};
-        this.modelLog.push({ ...c, message, ...chat });
+        const chat = tab === 'chat' && this.agentChat ? { chat: this.agentChat.id, turn: this.agentChat.turns.length } : {};
+        this.modelLog.push({ ...c, message: tab === 'chat' ? message : this.convs[tab]?.question || '', tab, ...chat });
         if (this.modelLog.length > 500) this.modelLog.shift();
-        this.$('downloadLog').classList.remove('hidden');
+        this.setHasLog(tab, true);
       });
     }
     const tick = setInterval(() => this.renderMeter(), 1000);
@@ -321,27 +387,98 @@ class Session {
       this.answerAgent(null);
       this.$('agentTalk').classList.add('hidden');
       this.showAgentChat();
+      this.taskTab = null;
       renderGlobalBusy();
     }
   }
 
-  renderMeter() {
-    const m = this.meter;
+  /** The time and cost of the tab's last run (a saved turn's, when opened from the history). */
+  renderMeter(tab = this.viewTab) {
+    const v = this.views[tab];
+    if (v.meter) v.meterText = meterText(v.meter);
+    if (tab !== this.tab) return;
     const el = this.$('meter');
-    if (!m) { el.classList.add('hidden'); el.textContent = ''; return; }
-    const secs = Math.round(((m.end || Date.now()) - m.start) / 1000);
-    const parts = [`⏱ ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`];
-    if (m.requests) {
-      parts.push(`${m.requests} request${m.requests > 1 ? 's' : ''}`);
-      parts.push(`${tokens(m.input)} tokens in${m.cached ? ` (${tokens(m.cached)} cached)` : ''}, ${tokens(m.output)} out`);
-      // Speed of a model on this computer (Ollama, LM Studio…): time spent generating, not the whole run.
-      if (m.local && m.localMs > 500 && m.localOut) parts.push(`${(m.localOut / (m.localMs / 1000)).toFixed(1)} tokens/s`);
-      if (m.local === m.requests) parts.push('no API cost');
-      else if (m.unpriced === m.requests - m.local) parts.push('cost unknown: add the prices in Settings → API models');
-      else parts.push(`${m.unpriced ? 'at least ' : ''}${dollars(m.cost)}`);
-    }
-    el.textContent = parts.join(' · ');
-    el.classList.remove('hidden');
+    el.textContent = v.meterText;
+    el.classList.toggle('hidden', !v.meterText);
+  }
+
+  // ----- Conversations (the same in every tab) -----
+  part(tab, name) { return this.root.querySelector(`.panel[data-panel="${tab}"] [data-conv="${name}"]`); }
+  /**
+   * A new question in a tab: the turn before it goes to the folded list of earlier turns, and the
+   * first one starts the conversation (one history entry, continued by every follow-up).
+   */
+  beginTurn(tab, question) {
+    let c = this.convs[tab];
+    if (c?.question != null) this.archiveTurn(tab, this.turnOf(tab, this.lastMeter));
+    c ||= this.convs[tab] = { id: newHistoryId(), type: tab, createdAt: Date.now(), url: this.url, title: '', turns: [], data: {} };
+    c.question = question;
+    c.answer = null; // set when the saved answer differs from what the card shows (Form: the values)
+    this.showQuestion(tab, question);
+    this.setSources([]);
+    this.setOutput('');
+    return c;
+  }
+  /** The open turn of a tab as data: shown in the earlier turns and saved with the conversation. */
+  turnOf(tab, meter = this.views[tab].meterText) {
+    const c = this.convs[tab];
+    return { question: c.question, answer: c.answer ?? this.views[tab].output, ...(meter ? { meter } : {}) };
+  }
+  /** Adds a finished turn to the folded list of earlier turns (newest first, under the current answer). */
+  archiveTurn(tab, turn) {
+    const c = this.convs[tab];
+    const index = c.turns.length;
+    c.turns.push(turn);
+    const el = turnElement(turn, index + 1);
+    this.part(tab, 'list').prepend(el);
+    this.showEarlier(tab);
+    return { el, index };
+  }
+  showQuestion(tab, question) {
+    const el = this.part(tab, 'q');
+    renderMarkdown(el, question || '');
+    el.classList.toggle('hidden', !question);
+  }
+  showEarlier(tab) {
+    const n = this.part(tab, 'list').children.length;
+    this.part(tab, 'earlier').classList.toggle('hidden', !n);
+    this.part(tab, 'earlier').querySelector('.count').textContent = n ? `(${n})` : '';
+  }
+  /** Saves the tab's conversation as one history entry (with the attached files, where the tab uses them). */
+  async saveConv(tab, extra = {}) {
+    const c = this.convs[tab];
+    if (!c) return;
+    const files = FILE_TABS.has(tab) ? this.attachments.saved() : [];
+    c.saved = true;
+    await this.remember({ type: c.type, id: c.id, createdAt: c.createdAt, url: c.url || this.url || '', title: c.title || c.turns[0]?.question || c.question,
+      turns: [...c.turns, this.turnOf(tab)], ...(Object.keys(c.data).length ? { data: c.data } : {}), ...(files.length ? { files } : {}), ...extra });
+    if (tab === this.tab) this.$('exportChat').classList.remove('hidden');
+  }
+  /** Forgets the tab's conversation (it stays in the history): the next question starts a new one. */
+  newConversation(tab = this.tab) {
+    if (this.controller) return;
+    if (tab === 'chat') this.resetAgentUI();
+    this.convs[tab] = null;
+    this.part(tab, 'list').replaceChildren();
+    this.showEarlier(tab);
+    this.showQuestion(tab, '');
+    Object.assign(this.views[tab], { output: 'Ready.', status: '', sources: [], handle: null, meter: null, meterText: '', hasLog: false });
+    if (tab === 'form') { this.pendingFill = null; this.$('fillPreview').classList.add('hidden'); this.showFormMode(); }
+    if (tab === 'summarize') this.$('summaryAsk').value = '';
+    if (tab === this.tab) this.renderView();
+    this.renderHistory();
+  }
+  /** Shows a saved conversation in its tab; the next question continues it. */
+  openConversation(tab, e) {
+    const c = this.convs[tab] = { id: e.id, type: tab, createdAt: e.createdAt, url: e.url, title: e.title, turns: [], data: { ...(e.data || {}) }, saved: true };
+    if (FILE_TABS.has(tab)) this.attachments.restore(e.files);
+    for (const t of e.turns.slice(0, -1)) this.archiveTurn(tab, t);
+    const last = e.turns.at(-1) || { question: e.title, answer: '' };
+    c.question = last.question;
+    this.showQuestion(tab, last.question);
+    Object.assign(this.views[tab], { output: last.answer || '', meter: null, meterText: last.meter || '', sources: [], handle: null });
+    if (tab === this.tab) this.renderView();
+    return c;
   }
 
   // ----- Features -----
@@ -352,25 +489,57 @@ class Session {
     return { title: a.name, url: '', meta: '', blocks: a.blocks };
   }
 
-  async doSummarize(signal) {
-    const source = this.$('summarySource').value;
-    this.setSources([]);
-    this.setOutput('');
-    let page;
-    if (source === 'page') {
-      this.setStatus('Reading page…');
-      page = await (await this.page()).call('extract');
-    } else {
-      page = this.fileAsPage(source);
+  /** The source of a summary conversation: the page, or an attached file (found by its name after a reload). */
+  async summarySourcePage(source) {
+    if (source.file) {
+      const a = this.attachments.list().find((x) => x.name === source.file);
+      if (!a) throw new Error(`“${source.file}” is not attached any more. Attach it again (📎), or start a new summary.`);
+      return this.fileAsPage(a.id);
     }
+    this.setStatus('Reading page…');
+    return (await this.page()).call('extract');
+  }
+  /**
+   * Summarize: the first summary of the conversation, or another one (other source or length); the
+   * text in the box, if any, says what to focus on. A turn of the conversation each time.
+   */
+  async doSummarize(signal) {
+    const sel = this.$('summarySource');
+    const focus = this.$('summaryAsk').value.trim();
+    const source = sel.value === 'page' ? { page: true } : { file: this.attachments.get(sel.value)?.name };
+    const label = sel.value === 'page' ? `“${this.title || 'this page'}”` : `📎 ${source.file}`;
+    const c = this.beginTurn('summarize', `Summary (${settings.summaryLength}) of ${label}${focus ? `: ${focus}` : ''}`);
+    this.$('summaryAsk').value = '';
+    const page = await this.summarySourcePage(source);
+    c.data = { source };
+    c.title ||= page.title || 'Summary';
     const text = await summarizePage({
-      page, length: settings.summaryLength, lang: settings.lang, signal,
+      page, length: settings.summaryLength, lang: settings.lang, focus, signal,
       onStatus: (t) => this.setStatus(t), onText: (t) => { this.setStatus('Writing summary…'); this.setOutput(t); }
     });
     this.setOutput(text || 'No summary was generated.');
-    this.setStatus(`Summary of “${page.title}”`);
-    if (text) this.remember({ type: 'summarize', id: newHistoryId(), createdAt: Date.now(), url: page.url || '', title: page.title || 'Summary',
-      turns: [{ question: `Summary (${settings.summaryLength}) of “${page.title}”`, answer: text }] });
+    this.setStatus(`Summary of “${page.title}”. Ask a follow-up below (“shorter”, “in German”, a question…).`);
+    if (text) await this.saveConv('summarize');
+  }
+  /** A follow-up to the summary: builds on the last answer and the parts of the source it is about. */
+  async doSummaryFollowUp(signal) {
+    const text = this.$('summaryAsk').value.trim();
+    const c = this.convs.summarize;
+    if (!c?.data?.source) return this.doSummarize(signal); // nothing to follow up yet: a summary, focused on the text
+    if (!text) { this.setStatus('Type a follow-up: “shorter”, “in German”, “more about the prices”, or a question.'); return; }
+    const previous = this.views.summarize.output;
+    const earlier = [...c.turns];
+    let page = null;
+    try { page = await this.summarySourcePage(c.data.source); } catch (e) { this.setStatus(`${e.message} Answering from the summary only.`); }
+    this.beginTurn('summarize', text);
+    this.$('summaryAsk').value = '';
+    const excerpts = page ? relevantPassages({ page, question: `${text}\n${previous.slice(0, 500)}`, maxChars: 3500, maxPassages: 8 }).context : '';
+    this.setStatus('Writing…');
+    const answer = await followUpSummary({ request: text, previous, earlier, excerpts, title: page?.title || c.title, lang: settings.lang, signal,
+      onText: (t) => this.setOutput(t) });
+    this.setOutput(answer || 'No answer was generated.');
+    this.setStatus('');
+    if (answer) await this.saveConv('summarize');
   }
 
   showHits(res) {
@@ -378,13 +547,14 @@ class Session {
     this.$('hitNav').classList.toggle('hidden', !has);
     this.$('hitCount').textContent = has ? `${res.index + 1} / ${res.total}` : '';
   }
+  /** Search: each query is a turn of the tab's search conversation (no model, unless it searches by meaning). */
   async doSearch(signal) {
     const query = this.$('searchQuery').value.trim();
-    if (!query) { this.setOutput('Type what you are looking for.'); return; }
+    if (!query) { this.setStatus('Type what you are looking for.'); return; }
     const handle = await this.page();
     this.searchHandle = handle;
-    this.setSources([]);
-    this.setOutput('');
+    const c = this.beginTurn('search', query);
+    c.title ||= query;
     // Literal search runs without the model; only the search by meaning needs it.
     const res = await smartSearch({
       pageHandle: {
@@ -404,18 +574,34 @@ class Session {
     } else {
       this.setOutput(res.answer || `Could not find anything related to “${query}” on this page.`);
     }
-    this.remember({ type: 'search', id: newHistoryId(), createdAt: Date.now(), url: this.url || '', title: query,
-      turns: [{ question: query, answer: this.outputText }] });
+    await this.saveConv('search');
   }
 
-  async doPrepareFill(signal) {
+  /** Form request so far: the first instruction and the follow-ups that asked to fill it all again. */
+  formRequest() { return this.convs.form?.data?.instruction || ''; }
+  /** Before the first scan the box takes the instruction; after it, follow-ups (Enter sends them). */
+  showFormMode() {
+    const started = !!this.pendingFill || !!this.convs.form;
+    this.$('formInstruction').placeholder = started ? 'Ask for a change, e.g. “also fill Skills” or “use another project” (Enter to send)' : this.formPlaceholder;
+    this.$('refineFill').classList.toggle('hidden', !this.pendingFill);
+    this.$('prepareFill').textContent = started ? 'Scan form again' : 'Scan form & prepare values';
+  }
+  /**
+   * Scans the form and prepares values for all of it: the first turn of a form conversation, or a later
+   * one (another item, the form again after a change on the page). `typed` adds to the request so far.
+   */
+  async doPrepareFill(signal, typed = this.$('formInstruction').value.trim()) {
     const handle = await this.page();
-    this.setSources([]);
+    const instruction = [this.formRequest(), typed].filter(Boolean).join('\n');
+    const c = this.beginTurn('form', typed || (this.convs.form?.turns.length || this.convs.form?.question ? 'Scan the form again' : 'Fill the form'));
+    this.$('formInstruction').value = '';
+    c.data = { instruction };
+    let host = ''; try { host = new URL(this.url).hostname.replace(/^www\./, ''); } catch { /* not a web page */ }
+    c.title ||= instruction.trim() || `Form on ${host || 'a page'}`;
     this.setStatus('Scanning form fields…');
     const fields = await handle.call('listFields');
     if (!fields.length) { this.setStatus(''); this.setOutput('No fillable form fields were found on this page.'); return; }
     const profile = settings.profile;
-    const instruction = this.$('formInstruction').value;
     const files = this.attachments;
     if (!profile.trim() && !instruction.trim() && !files.hasAttachments()) {
       this.setStatus('');
@@ -458,17 +644,20 @@ class Session {
     const about = `${noSource}${proposals.subject ? `Filled for: “${proposals.subject}”. To fill it for another item, name it in your request and scan again.\n` : ''}${skipped}${proposals.subject || skipped ? '\n' : ''}`;
     if (!proposals.length && !adds.length) {
       this.setOutput(`${about}Found ${fields.length} field(s), but none matched the information you provided.${failed}`);
+      await this.saveConv('form');
       return;
     }
     this.pendingFill = { handle, items, instruction, choice: proposals.choice };
     this.renderFillRows();
+    this.showFormMode();
     const parts = [`Prepared ${proposals.length} of ${fields.length} field(s)`,
       clears.length && `${clears.length} filled field(s) without a suggestion will be cleared`,
       adds.length && `${adds.reduce((n, a) => n + a.values.length, 0)} item(s) to add with ${adds.map((a) => `“${addName(a.adder)}”`).join(', ')}`].filter(Boolean);
     this.setOutput(`${about}${parts.join('; ')}. Review and edit the values, then click “Apply selected”. Nothing has been entered yet.${failed}`);
-    this.rememberFill(instruction.trim() || 'Fill the form', `${about}Values prepared for ${proposals.length} of ${fields.length} field(s):\n\n` +
+    c.answer = `${about}Values prepared for ${proposals.length} of ${fields.length} field(s):\n\n` +
       `${proposals.map((p) => `${fieldName(p.field)}: ${p.value}`).join('\n')}` +
-      `${adds.map((a) => `\n${addName(a.adder)}: ${a.values.join(', ')}`).join('')}${failed}`, instruction);
+      `${adds.map((a) => `\n${addName(a.adder)}: ${a.values.join(', ')}`).join('')}${failed}`;
+    await this.saveConv('form');
   }
 
   /** The review rows of the prepared values (this.pendingFill.items). */
@@ -540,26 +729,15 @@ class Session {
     }
   }
 
-  /** Saves a scan or a follow-up as a turn of this panel's form-fill history entry. */
-  rememberFill(question, answer, instruction) {
-    let host = ''; try { host = new URL(this.url).hostname.replace(/^www\./, ''); } catch { /* not a web page */ }
-    // Scans in this panel, and scans after opening a saved form fill, continue the same history entry
-    // (one entry per session of filling forms, with a turn per scan), and keep the attached files with it.
-    this.formEntry ||= { id: newHistoryId(), createdAt: Date.now(), turns: [] };
-    this.formEntry.turns = [...this.formEntry.turns, { question, answer }].slice(-20);
-    const saved = this.attachments.saved();
-    this.remember({ type: 'form', id: this.formEntry.id, createdAt: this.formEntry.createdAt, url: this.url || '', title: instruction.trim() || `Form on ${host || 'a page'}`,
-      data: { instruction }, turns: this.formEntry.turns, ...(saved.length ? { files: saved } : {}) });
-  }
-
   /**
    * A follow-up to the prepared values ("also fill Skills"): fills the fields and "Add" buttons it is about,
    * keeping the other rows as the user left them. Asking for another item fills the whole form again.
    */
   async doRefineFill(signal) {
     const pending = this.pendingFill;
-    const text = this.$('fillFollowup').value.trim();
-    if (!pending || !text) return;
+    const text = this.$('formInstruction').value.trim();
+    if (!pending) return this.doPrepareFill(signal); // no values prepared (none yet, or applied): fill the form
+    if (!text) { this.setStatus('Type what to change, e.g. “also fill Skills”, or click “Scan form again”.'); return; }
     this.syncFillRows();
     this.setStatus('Scanning form fields…');
     const handle = await this.page();
@@ -573,13 +751,10 @@ class Session {
     }
     this.setStatus('Reading your follow-up…');
     const t = await followUpTargets({ text, fields, adders, subject: pending.choice?.subject, signal });
-    if (t.redo) {
-      // Another item, or everything again: the whole form, with the follow-up added to the request.
-      const box = this.$('formInstruction');
-      box.value = `${box.value.trim()}\n${text}`.trim();
-      this.$('fillFollowup').value = '';
-      return this.doPrepareFill(signal);
-    }
+    // Another item, or everything again: the whole form, with the follow-up added to the request.
+    if (t.redo) return this.doPrepareFill(signal, text);
+    this.beginTurn('form', text);
+    this.$('formInstruction').value = '';
     let tf = fields.filter((f) => t.fields?.includes(f.id));
     let ta = adders.filter((a) => t.adders?.includes(a.id));
     if (!tf.length && !ta.length) {
@@ -616,18 +791,19 @@ class Session {
       changed.push(`${addName(a)}: ${got.join(', ')}`);
     }
     pending.instruction = instruction; // a later follow-up builds on this one
-    this.$('fillFollowup').value = '';
     this.renderFillRows();
     const out = [changed.length ? `Updated:\n${changed.map((c) => `• ${c}`).join('\n')}` : 'Nothing new was found.',
       missing.length && `Nothing found in your info for: ${missing.map((m) => `“${m}”`).join(', ')}. Type the values in their rows, or say in a follow-up where they are (for example which section of your CV).`,
       'The other rows are as you left them. Review, then click “Apply selected”.'].filter(Boolean).join('\n\n');
     this.setOutput(out);
-    this.rememberFill(text, out, this.$('formInstruction').value);
+    await this.saveConv('form');
   }
 
   async doApplyFill() {
     const pending = this.pendingFill;
     if (!pending) return;
+    this.syncFillRows();
+    this.beginTurn('form', 'Apply the selected values');
     const rows = [...this.$('fillItems').children].map((r) => {
       const i = Number(r.querySelector('[data-index]').dataset.index);
       return { r, it: pending.items[i], on: r.querySelector('input[type="checkbox"]').checked, value: r.querySelector('input[type="text"], textarea, select').value };
@@ -665,6 +841,8 @@ class Session {
     this.setStatus('');
     this.setOutput(`Applied ${ok} value(s)${bad ? `, ${bad} failed (see above)` : ''}. Review the form before submitting it yourself.`);
     if (!bad) { this.$('fillPreview').classList.add('hidden'); this.pendingFill = null; }
+    this.showFormMode();
+    await this.saveConv('form');
   }
 
   log(entry) {
@@ -750,7 +928,7 @@ class Session {
    */
   async doRunTask(signal) {
     const text = this.$('goal').value.trim();
-    if (!text) { this.setOutput(this.agentChat ? 'Type your message.' : 'Ask about this page, or say what should be done.'); return; }
+    if (!text) { this.setStatus(this.agentChat ? 'Type your message.' : 'Ask about this page, or say what should be done.'); return; }
     const chat = this.agentChat;
     const handle = await this.page();
     if (chat) this.archiveAgentTurn();
@@ -761,7 +939,8 @@ class Session {
     this.$('goal').value = '';
     this.showAgentChat(text);
     this.setSources([]);
-    this.agentChat = chat || { id: newHistoryId(), createdAt: Date.now(), url: this.url, turns: [] };
+    this.agentChat = chat || { id: newHistoryId(), type: 'chat', createdAt: Date.now(), url: this.url, title: '', turns: [], data: {} };
+    this.agentChat.question = text;
     this.showAgentChat();
     const earlier = this.agentChat.turns;
     const memory = await this.runAgentTurn(text, handle, chat?.memory, earlier, signal);
@@ -819,22 +998,30 @@ class Session {
     // Excerpts it cited can be highlighted, while the tab still shows that page.
     if (sources.length && /\[\d+\]/.test(res.answer || '')) {
       const now = await chrome.tabs.get(this.tabId).catch(() => null);
-      if (now?.url === tab.url) { this.setStatus(`${this.$('status').textContent} Sources (click to highlight in page):`); this.setSources(citedSources(res.answer, sources), handle); }
+      if (now?.url === tab.url) { this.setStatus(`${this.statusText()} Sources (click to highlight in page):`); this.setSources(citedSources(res.answer, sources), handle); }
     }
     return res.memory;
   }
   /** The current turn as data: shown in the history and saved with the conversation. */
-  currentTurn(meter) {
+  currentTurn(meter, interrupted = false) {
     const { plan = [], notes = [], results = [] } = this.agentChat?.memory?.state || {};
-    return { question: this.agentQuestion, answer: this.outputText, steps: [...this.turnSteps], meter,
+    const answer = interrupted
+      ? 'The agent stopped before it finished (the panel was closed or reloaded, or it was stopped). Its steps, plan, notes and results so far are kept: send a message (for example “continue”) to go on from there.'
+      : this.outputText;
+    return { question: this.agentQuestion, answer, steps: [...this.turnSteps], meter,
       ...(plan.length || notes.length || results.length ? { state: structuredClone({ plan, notes, results }) } : {}) };
   }
-  async saveAgentChat() {
+  /** Saves the chat; while the agent works (interrupted = true), its progress after each step. The saves run
+   *  one after another, so a slow save of the progress never overwrites the finished turn. */
+  saveAgentChat(interrupted = false) {
     const c = this.agentChat;
-    await this.remember({ type: 'chat', id: c.id, title: c.turns[0]?.question || this.agentQuestion, url: c.url, createdAt: c.createdAt,
-      turns: [...c.turns, this.currentTurn(this.$('meter').textContent)], ...(c.memory ? { memory: c.memory } : {}),
-      files: this.attachments.saved() });
-    this.$('exportChat').classList.remove('hidden');
+    c.saved = true;
+    const entry = { type: 'chat', id: c.id, title: c.turns[0]?.question || this.agentQuestion, url: c.url, createdAt: c.createdAt,
+      turns: [...c.turns, this.currentTurn(this.views.chat.meterText, interrupted)], ...(c.memory ? { memory: c.memory } : {}),
+      files: this.attachments.saved() };
+    this.chatSaving = (this.chatSaving || Promise.resolve()).then(() => this.remember(entry));
+    if (this.tab === 'chat') this.$('exportChat').classList.remove('hidden');
+    return this.chatSaving;
   }
 
   // ----- History -----
@@ -842,19 +1029,19 @@ class Session {
   async remember(entry) {
     const { restored, ...rest } = entry;
     if (this.pages.length) rest.pages = this.pages.map(({ url, title }) => ({ url, title }));
-    try { await saveHistory(rest); } catch (e) { this.setStatus(`${this.$('status').textContent} Not saved in the history: ${e?.message || e}`); }
+    try { await saveHistory(rest); } catch (e) { this.setStatus(`${this.statusText()} Not saved in the history: ${e?.message || e}`); }
     this.renderHistory();
   }
   /** The history, newest first, above the tabs. */
   async renderHistory() {
     const entries = await listHistory();
     this.$('historyCount').textContent = entries.length ? `(${entries.length})` : '';
-    const openIds = new Set([this.agentChat?.id].filter(Boolean));
+    const openIds = new Set(TABS.map((t) => this.convs[t]?.id).filter(Boolean));
     this.$('historyList').replaceChildren(...entries.map((e) => {
       const li = document.createElement('li');
       if (openIds.has(e.id)) li.className = 'open';
       const title = Object.assign(document.createElement('button'), { className: 'entry-title',
-        title: CHAT_TYPES.has(e.type) ? 'Open and continue this chat' : 'Open' });
+        title: 'Open it in its tab and continue it' });
       title.append(Object.assign(document.createElement('span'), { className: 'kind', textContent: HISTORY_TYPES[e.type] || e.type }),
         Object.assign(document.createElement('span'), { textContent: e.title, dir: 'auto' }));
       title.addEventListener('click', () => this.openHistory(e));
@@ -866,65 +1053,56 @@ class Session {
       del.addEventListener('click', async () => { await deleteHistory(e.id); this.renderHistory(); });
       const exp = Object.assign(document.createElement('button'), { className: 'text-button', textContent: 'Export',
         title: 'Save this entry as a JSON file (with the model log, when it is the chat open here and a log was kept)' });
-      exp.addEventListener('click', () => { exportEntry(e, e.id === this.agentChat?.id ? this.modelLog : []); downloaded(exp); });
+      exp.addEventListener('click', () => {
+        const tab = TABS.find((t) => this.convs[t]?.id === e.id);
+        exportEntry(e, tab ? this.modelLog.filter((x) => (x.tab || 'chat') === tab) : []); downloaded(exp);
+      });
       meta.append(' ', exp, ' ', del);
       li.append(title, meta);
       return li;
     }));
   }
   showTab(name) { this.root.querySelector(`.tabs button[data-tab="${name}"]`).click(); }
-  /** Opens a history entry in its tab. Ask and Agent conversations continue with the next question. */
+  /** Opens a history entry in its tab: the conversation continues with the next question there. */
   openHistory(e) {
     if (this.controller) return;
+    const tab = TAB_OF_TYPE[e.type];
+    if (!tab) return;
     this.$('historyBox').open = false;
-    this.meter = null; this.renderMeter();
-    this.setSources([]);
+    this.showTab(tab);
+    this.newConversation(tab);
     const when = new Date(e.updatedAt).toLocaleString();
-    const last = e.turns.at(-1);
     this.mergePages(e.pages || (e.url ? [{ url: e.url, title: CHAT_TYPES.has(e.type) ? '' : e.title }] : []));
-    switch (e.type) {
-      case 'chat': case 'agent': case 'ask': this.showTab('chat'); this.openAgentChat(e); break;
-      case 'summarize':
-        this.showTab('summarize');
-        this.setOutput(last.answer);
-        this.setStatus(`Saved: ${last.question}, ${when}.`);
-        break;
-      case 'search':
-        this.showTab('search');
-        this.$('searchQuery').value = e.title;
-        this.setOutput(last.answer);
-        this.setStatus(`Saved search from ${when}. Click Search to run it on this page.`);
-        break;
-      case 'form':
-        this.showTab('form');
-        this.$('formInstruction').value = e.data?.instruction || '';
-        this.$('fillPreview').classList.add('hidden'); this.pendingFill = null;
-        this.formEntry = { id: e.id, createdAt: e.createdAt, turns: [...e.turns] }; // the next scan continues this entry
-        this.attachments.restore(e.files); // the files attached when it was saved, attached again
-        this.setOutput(last.answer);
-        this.setStatus(`Saved from ${when}.${e.files?.length ? ` Its attached file${e.files.length > 1 ? 's are' : ' is'} attached again: ${e.files.map((f) => `📎 ${f.name}`).join(', ')}.` : ''} ` +
-          'Open the form and click “Scan form & prepare values” to fill it again.');
-        break;
-    }
+    if (tab === 'chat') { this.openAgentChat(e); this.renderHistory(); return; }
+    this.openConversation(tab, e);
+    const files = FILE_TABS.has(tab) ? filesNote(e.files) : '';
+    const next = {
+      summarize: 'Ask a follow-up below, or click Summarize for a new summary in this conversation.',
+      search: 'Search again to run a query on this page.',
+      form: 'Open the form and click “Scan form again” to fill it with the same request, or type what to change.'
+    }[tab];
+    if (tab === 'form') this.showFormMode();
+    this.setStatus(`Saved from ${when}.${files} ${next}`);
     this.renderHistory();
   }
   /** Shows a saved agent conversation in this tab; the next question continues it. */
   openAgentChat(c) {
     this.resetAgentUI();
-    this.agentChat = { id: c.id, createdAt: c.createdAt, url: c.url, turns: [], ...(c.memory ? { memory: c.memory } : {}) };
+    this.agentChat = { id: c.id, type: 'chat', createdAt: c.createdAt, url: c.url, title: c.title, turns: [], data: {}, saved: true, ...(c.memory ? { memory: c.memory } : {}) };
     this.attachments.restore(c.files); // the files attached in this chat, attached again
     for (const t of c.turns.slice(0, -1)) this.archiveAgentTurn(t);
     const last = c.turns.at(-1);
     this.showAgentChat(last?.question || '');
+    this.agentChat.question = last?.question || '';
     this.setOutput(last?.answer || '');
     for (const step of last?.steps || []) this.log(step);
-    if (last?.meter) { this.$('meter').textContent = last.meter; this.$('meter').classList.remove('hidden'); }
+    this.views.chat.meterText = last?.meter || '';
+    this.renderMeter('chat');
     const { plan = [], notes = [], results = [] } = c.memory?.state || {};
     this.agentEvent({ type: 'plan', plan }); this.agentEvent({ type: 'notes', notes }); this.agentEvent({ type: 'results', results });
     this.foldAgentBoxes(true); // a saved conversation opens with its answer; the details are one click away
     this.$('exportChat').classList.remove('hidden');
-    const files = c.files?.length ? ` Its attached file${c.files.length > 1 ? 's are' : ' is'} attached again: ${c.files.map((f) => `📎 ${f.name}`).join(', ')}.` : '';
-    this.setStatus(`Saved conversation from ${new Date(c.updatedAt).toLocaleString()}.${files} Type a follow-up in the box above to continue it.`);
+    this.setStatus(`Saved conversation from ${new Date(c.updatedAt).toLocaleString()}.${filesNote(c.files)} Type a follow-up in the box above to continue it.`);
     this.$('goal').focus();
   }
   // ----- Agent UI -----
@@ -939,27 +1117,24 @@ class Session {
     for (const id of ['agentPlan', 'agentNotes', 'agentResults']) this.$(id).replaceChildren();
     for (const id of ['agentPlanBox', 'agentNotesBox', 'agentResultsBox', 'agentAsk', 'agentTalk']) this.$(id).classList.add('hidden');
     this.inbox = [];
-    this.modelLog = [];
-    this.$('downloadLog').classList.add('hidden');
-    this.$('exportChat').classList.add('hidden');
+    this.modelLog = this.modelLog.filter((x) => x.tab && x.tab !== 'chat'); // the other tabs keep theirs
+    this.setHasLog('chat', false);
+    if (this.tab === 'chat') this.$('exportChat').classList.add('hidden');
     this.turnBase = null;
     this.$('agentPlanBox').classList.remove('stale');
     for (const c of this.root.querySelectorAll('.agent-box > summary > .count:not(#agentStepCount)')) c.textContent = '';
     this.agentChat = null;
     this.turnSteps = [];
-    this.$('agentHistory').replaceChildren();
+    this.part('chat', 'list').replaceChildren();
     this.showAgentChat('');
   }
   /** The question of the current turn above its answer, and the box as "ask a follow-up". */
   showAgentChat(question) {
     if (question != null) {
       this.agentQuestion = question;
-      renderMarkdown(this.$('agentCurrentQ'), question);
-      this.$('agentCurrentQ').classList.toggle('hidden', !question);
+      this.showQuestion('chat', question);
     }
-    const n = this.$('agentHistory').children.length;
-    this.$('agentHistoryBox').classList.toggle('hidden', !n);
-    this.$('agentHistoryCount').textContent = n ? `(${n})` : '';
+    this.showEarlier('chat');
     const chat = !!this.agentChat;
     this.$('runTask').textContent = 'Send';
     this.$('newTask').classList.toggle('hidden', !chat);
@@ -970,17 +1145,14 @@ class Session {
    * the current one when the user asks a follow-up, or a saved one when a conversation is opened.
    */
   archiveAgentTurn(turn = this.currentTurn(this.lastMeter)) {
-    const index = this.agentChat.turns.length;
-    this.agentChat.turns.push(turn);
-    const el = turnElement(turn, index + 1);
+    const { el, index } = this.archiveTurn('chat', turn);
     if (this.turnCalls(index).length) {
       const btn = Object.assign(document.createElement('button'), { className: 'text-button small', textContent: 'Download model log',
         title: 'The requests sent to the model for this question, and its replies, exactly as they were, as a text file' });
       btn.addEventListener('click', () => { this.downloadModelLog(index); downloaded(btn); });
       el.querySelector('.turn-tools').append(btn);
     }
-    this.$('agentHistory').prepend(el); // newest first, right under the current answer
-    this.$('downloadLog').classList.add('hidden'); // until the new question's first request
+    this.setHasLog('chat', false); // until the new question's first request
     this.$('taskLog').replaceChildren();
     this.$('agentStepCount').textContent = '';
     this.turnSteps = [];
@@ -1011,7 +1183,7 @@ class Session {
   downloadModelLog(index = this.agentChat?.turns.length) {
     const type = 'text/plain;charset=utf-8';
     const c = this.agentChat;
-    if (!c) { downloadFile(`model-log-${stamp()}.txt`, formatModelLog(this.modelLog.filter((x) => !x.chat), { title: this.title, url: this.url }), type); return; }
+    if (this.tab !== 'chat' || !c) { downloadFile(`model-log-${this.tab}-${stamp()}.txt`, formatModelLog(this.modelLog.filter((x) => !x.chat && (x.tab || 'chat') === this.tab), { title: this.title, url: this.url }), type); return; }
     const calls = this.turnCalls(index);
     const before = index > 0 ? this.turnCalls(index - 1).at(-1) : null;
     const question = index < c.turns.length ? c.turns[index].question : this.agentQuestion;
@@ -1019,12 +1191,12 @@ class Session {
     downloadFile(`${fileStem('chat', title)}-q${index + 1}-model-log.txt`,
       formatModelLog(calls, { title, url: c.url || this.url, question, number: index + 1, before }), type);
   }
-  /** Saves the open chat, as it is in the history, as a JSON file (with the model log of this tab, if kept). */
+  /** Saves the open tab's conversation, as it is in the history, as a JSON file (with its model log, if kept). */
   async exportChat() {
-    const id = this.agentChat?.id;
+    const id = this.convs[this.tab]?.id;
     const entry = id && (await listHistory()).find((e) => e.id === id);
-    if (!entry) { this.setStatus('This chat is not in the history yet: export it after the answer.'); flash(this.$('exportChat'), 'Not yet', { ok: false }); return; }
-    exportEntry(entry, this.modelLog);
+    if (!entry) { this.setStatus('This conversation is not in the history yet: export it after the answer.'); flash(this.$('exportChat'), 'Not yet', { ok: false }); return; }
+    exportEntry(entry, this.modelLog.filter((x) => (x.tab || 'chat') === this.tab));
     downloaded(this.$('exportChat'));
   }
   agentEvent(e) {
@@ -1041,6 +1213,7 @@ class Session {
     const base = this.turnBase;
     switch (e.type) {
       case 'status': this.setStatus(e.text); break;
+      case 'checkpoint': if (this.agentChat) { this.agentChat.memory = e.memory; this.saveAgentChat(true); } break;
       case 'step': this.log({ type: e.kind || 'action', text: e.text }); break;
       case 'plan': {
         list('agentPlan', e.plan, planItem);
@@ -1100,12 +1273,11 @@ class Session {
       this.setStatus(`Reading ${file.name}…`);
       try {
         const a = await this.attachments.addFile(file);
-        this.setOutput(`Attached “${a.name}” (${a.kind}${a.pages ? `, ${a.pages} page${a.pages > 1 ? 's' : ''}` : ''}) to this tab’s session. It is used by Chat and Form, and can be summarized.`);
+        this.setStatus(`Attached “${a.name}” (${a.kind}${a.pages ? `, ${a.pages} page${a.pages > 1 ? 's' : ''}` : ''}). Chat and Form use it, and Summarize can summarize it.`);
       } catch (e) {
-        this.setOutput(`Could not read “${file.name}”: ${e.message}`);
+        this.setStatus(`Could not read “${file.name}”: ${e.message}`);
       }
     }
-    this.setStatus('');
   }
 
   // ----- Wiring -----
@@ -1116,15 +1288,16 @@ class Session {
     this.root.querySelectorAll('.tabs button').forEach((tab) => tab.addEventListener('click', () => {
       this.root.querySelectorAll('.tabs button').forEach((t) => t.classList.toggle('active', t === tab));
       this.root.querySelectorAll('.panel').forEach((p) => p.classList.toggle('hidden', p.dataset.panel !== tab.dataset.tab));
-      // In the Chat tab the Assistant card (status, time/cost, answer) goes under the current question.
-      const slot = { chat: 'agentAssistantSlot' }[tab.dataset.tab] || 'assistantHome';
-      this.$(slot).append(this.$('assistantCard'));
+      // The Assistant card (status, time/cost, answer) goes under the tab's current question, and shows its conversation.
+      this.tab = tab.dataset.tab;
+      this.part(this.tab, 'slot').append(this.$('assistantCard'));
+      this.renderView();
     }));
     this.attachments.onChange((list) => {
       this.renderAttachments(list);
-      // A file attached or removed in a saved chat: saved with it now (during a run, it is saved at the end).
-      if (this.agentChat && !this.controller) patchHistory(this.agentChat.id, { files: this.attachments.saved() }).catch(() => {});
-      if (this.formEntry) patchHistory(this.formEntry.id, { files: this.attachments.saved() }).catch(() => {});
+      // A file attached or removed in the open tab's saved conversation: saved with it now (during a run, at its end).
+      const c = this.convs[this.tab];
+      if (c?.saved && FILE_TABS.has(this.tab) && !this.controller) patchHistory(c.id, { files: this.attachments.saved() }).catch(() => {});
     });
     on('fileInput', 'change', (e) => { this.attachFiles([...e.target.files]); e.target.value = ''; });
 
@@ -1134,15 +1307,18 @@ class Session {
     on('profile', 'input', (e) => save('profile', e.target.value));
 
     on('summarize', 'click', run(this.doSummarize));
+    on('summaryFollow', 'click', run(this.doSummaryFollowUp));
+    on('summaryAsk', 'keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.run(this.doSummaryFollowUp); } });
     on('search', 'click', run(this.doSearch, { needsModel: false }));
     on('searchQuery', 'keydown', (e) => { if (e.key === 'Enter') this.run(this.doSearch, { needsModel: false }); });
     on('prevHit', 'click', () => this.searchHandle?.call('moveHit', -1).then((r) => this.showHits(r)).catch((e) => this.showError(e)));
     on('nextHit', 'click', () => this.searchHandle?.call('moveHit', 1).then((r) => this.showHits(r)).catch((e) => this.showError(e)));
     on('clearHits', 'click', () => { this.searchHandle?.call('clearHighlights').catch(() => {}); this.$('hitNav').classList.add('hidden'); });
-    on('prepareFill', 'click', run(this.doPrepareFill));
+    on('prepareFill', 'click', () => this.run((signal) => this.doPrepareFill(signal)));
     on('applyFill', 'click', run(this.doApplyFill, { needsModel: false }));
     on('refineFill', 'click', run(this.doRefineFill));
-    on('fillFollowup', 'keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.run(this.doRefineFill); } });
+    // Enter in the Form box: a follow-up to the prepared values, or (none yet) the scan.
+    on('formInstruction', 'keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.run(this.doRefineFill); } });
     on('runTask', 'click', () => {
       // Host access for the whole site (subdomains included) lets the agent move between its pages.
       // Permission requests need the click (user gesture), so it starts here, before anything async.
@@ -1160,7 +1336,7 @@ class Session {
     this.$('historyBox').addEventListener('toggle', () => { if (this.$('historyBox').open) this.renderHistory(); });
     on('downloadLog', 'click', () => { this.downloadModelLog(); downloaded(this.$('downloadLog')); });
     on('exportChat', 'click', () => this.exportChat());
-    on('newTask', 'click', () => { if (!this.controller) { this.resetAgentUI(); this.setOutput('Ready.'); this.setStatus(''); this.setSources([]); this.meter = null; this.renderMeter(); this.$('goal').focus(); this.renderHistory(); } });
+    on('newTask', 'click', () => { if (!this.controller) { this.newConversation('chat'); this.$('goal').focus(); } });
     on('goal', 'keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.$('runTask').click(); } });
     on('agentReply', 'keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendToAgent(); } });
     on('confirmRun', 'click', () => this.hideConfirm('run'));
@@ -1173,16 +1349,12 @@ class Session {
     on('pauseTask', 'click', () => this.togglePause());
     on('copy', 'click', () => {
       const button = this.$('copy');
-      if (!this.outputText?.trim()) { flash(button, 'Nothing to copy', { ok: false }); return; }
-      navigator.clipboard.writeText(this.outputText).then(() => flash(button, '✓ Copied'),
+      const text = this.views[this.tab].output;
+      if (!text.trim()) { flash(button, 'Nothing to copy', { ok: false }); return; }
+      navigator.clipboard.writeText(text).then(() => flash(button, '✓ Copied'),
         (e) => { flash(button, '✗ Not copied', { ok: false }); this.setStatus(`Could not copy: ${e.message || e}`); });
     });
-    on('clear', 'click', () => {
-      this.setOutput('Ready.'); this.setStatus(''); this.setSources([]);
-      if (!this.controller) { this.meter = null; this.renderMeter(); }
-      this.$('fillPreview').classList.add('hidden'); this.pendingFill = null;
-      this.resetAgentUI();
-    });
+    on('clear', 'click', () => this.newConversation(this.tab)); // "New": this tab starts a new conversation
   }
 
   /** Refresh the global settings mirrored inside this session's markup. */

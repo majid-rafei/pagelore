@@ -171,8 +171,7 @@ body.dragging #app { outline: 3px dashed var(--accent); outline-offset: -6px; }
 .reasoning.ignored select { text-decoration: line-through; opacity: 0.7; }
 
 /* The Assistant card inside the agent tab, above the plan */
-#agentAssistantSlot .output-wrap { margin: 8px 0; }
-#agentAssistantSlot .output-wrap { min-height: 0; }
+.conv-slot .output-wrap { margin: 8px 0; min-height: 0; }
 /* Steps of the agent: foldable, hidden until there is one */
 .steps-box:not(:has(li)) { display: none; }
 .agent-box summary .count { font-weight: 400; color: var(--muted); }

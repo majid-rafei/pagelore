@@ -323,13 +323,15 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   // ----- Compaction: when a request would be larger than compactAt tokens, the older part of the
   // transcript and the notes are summarized by one extra request. The last steps are kept as they are.
   const KEEP_STEPS = 8;
+  const FOLLOW_UP_KEEP = 3;           // steps kept in full when a follow-up starts
+  const FOLLOW_UP_COMPACT = 10000;    // tokens of earlier work above which a follow-up compacts it
   const sizeOf = (messages) => JSON.stringify(messages).length;
   let tokensPerChar = 0.3;    // estimate, corrected with the token counts the server reports
   let compactedAt = -99;      // step of the last compaction (not again within 3 steps)
-  const oldParts = () => {
-    // Cut where a step starts (an assistant message), keeping the last KEEP_STEPS steps.
+  const oldParts = (keep = KEEP_STEPS) => {
+    // Cut where a step starts (an assistant message), keeping the last `keep` steps.
     let cut = 0, steps = 0;
-    for (let i = transcript.length - 1; i > 0; i--) if (transcript[i].role === 'assistant' && ++steps >= KEEP_STEPS) { cut = i; break; }
+    for (let i = transcript.length - 1; i > 0; i--) if (transcript[i].role === 'assistant' && ++steps >= keep) { cut = i; break; }
     return { cut, chars: sizeOf(transcript.slice(0, cut)) };
   };
   const asText = (m) => {
@@ -338,9 +340,9 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     if (m.role === 'user') return `User: ${m.content}`;
     return [m.content && `Agent: ${m.content}`, ...(m.tool_calls || []).map((c) => `  - ${c.function?.name} ${clip(c.function?.arguments, 1300)}`)].filter(Boolean).join('\n');
   };
-  async function compact(step) {
+  async function compact(step, keep) {
     compactedAt = step;
-    const { cut } = oldParts();
+    const { cut } = oldParts(keep);
     if (!cut) return;
     onEvent({ type: 'status', text: 'Compacting the agent\'s memory (one extra request)…' });
     const input = [
@@ -596,6 +598,15 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     const pageText = step === 1 && excerpts ? `--- Excerpts of the open page relevant to the request (shown for this step only; cite them like [2]) ---\n${excerpts}\n\n` : '';
     let stateMsg = { role: 'user', content: `${nudge}${pageText}${await stateText(maxSteps - step + 1)}` };
     let messages = [...head, ...transcript, stateMsg];
+    // A follow-up starts with the earlier work compacted (only its last steps in full), when that is large:
+    // otherwise all of it would be sent again with every step of the new work.
+    if (followUp && step === 1 && compactAt > 0 && oldParts(FOLLOW_UP_KEEP).chars * tokensPerChar > Math.min(FOLLOW_UP_COMPACT, compactAt / 4)) {
+      const before = Math.round(sizeOf(messages) * tokensPerChar);
+      await compact(step, FOLLOW_UP_KEEP);
+      stateMsg = { role: 'user', content: `${nudge}${pageText}${await stateText(maxSteps - step + 1)}` };
+      messages = [...head, ...transcript, stateMsg];
+      onEvent({ type: 'step', kind: 'thought', text: `Compacted the earlier work before the follow-up: about ${before.toLocaleString('en')} → ${Math.round(sizeOf(messages) * tokensPerChar).toLocaleString('en')} tokens per request.` });
+    }
     // Too large: compact the older memory first, when it is a good part of the request.
     if (compactAt > 0 && step - compactedAt >= 3 && sizeOf(messages) * tokensPerChar > compactAt && oldParts().chars > sizeOf(messages) * 0.25) {
       const before = Math.round(sizeOf(messages) * tokensPerChar);
@@ -684,6 +695,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
       if (calls) assistantMsg.tool_calls = calls;
       return done(answer, step);
     }
+    // Saved after every step, so the work is not lost if the panel is closed or reloaded, or the user stops it.
+    onEvent({ type: 'checkpoint', memory: memoryOf(stepBase + step, true) });
     // The last step only updated the plan (or asked something): one more step, to write the answer.
     if (step >= maxSteps && !finishGrace) { finishGrace = true; wrapUp = true; maxSteps = step + 1; }
   }
@@ -715,9 +728,20 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     // A plain-text answer is already the last message; otherwise the answer is added as the agent's reply.
     if (plain && transcript.at(-1)?.role === 'assistant') transcript.at(-1).content = answer;
     else transcript.push({ role: 'assistant', content: answer });
-    const memory = { version: 2, goal, reference, filesNote, startPage, state: structuredClone(state), transcript, summary, summaryNotes, steps: stepBase + steps,
-      urls: { seen: [...urls.seen].slice(-3000), read: [...urls.read].slice(-1000) } };
-    return { answer, ...state, steps, memory };
+    return { answer, ...state, steps, memory: memoryOf(stepBase + steps) };
+  }
+  /** What the next message continues from. While the agent works (interrupted = true): a copy, with the
+   *  last step's large results already shortened and a note that the work stopped there. */
+  function memoryOf(totalSteps, interrupted = false) {
+    let t = transcript;
+    if (interrupted) {
+      const shortOf = new Map(shortenNext.map(({ message, short }) => [message, short]));
+      t = structuredClone(transcript.map((m) => (shortOf.has(m) ? { ...m, content: shortOf.get(m) } : m)));
+      t.push({ role: 'assistant', content: '(My work stopped here before I finished: the panel was closed or reloaded, or the user stopped me. ' +
+        'My plan, notes and results so far are kept. If the user asks me to continue, go on with the plan from here.)' });
+    }
+    return { version: 2, goal, reference, filesNote, startPage, state: structuredClone(state), transcript: t, summary, summaryNotes, steps: totalSteps,
+      urls: { seen: [...urls.seen].slice(-3000), read: [...urls.read].slice(-1000) }, ...(interrupted ? { interrupted: true } : {}) };
   }
 }
 
