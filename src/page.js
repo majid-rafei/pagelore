@@ -57,7 +57,7 @@ export class PageHandle {
         target: { tabId: this.tabId },
         func: () => globalThis.__localAI?.version ?? 0
       });
-      if (probe?.result === 5) return; // keep in sync with VERSION in content.js
+      if (probe?.result === 8) return; // keep in sync with VERSION in content.js
       await chrome.scripting.executeScript({ target: { tabId: this.tabId }, files: ['content.js'] });
       await chrome.scripting.insertCSS({ target: { tabId: this.tabId }, css: HIGHLIGHT_CSS });
     } catch (e) {

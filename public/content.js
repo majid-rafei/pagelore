@@ -2,7 +2,7 @@
 // It never runs model output as code: the panel can only call the fixed API at the bottom of this file.
 (() => {
   'use strict';
-  const VERSION = 7;
+  const VERSION = 8;
   if (globalThis.__localAI?.version === VERSION) return;
 
   // ---------- Stable element ids ----------
@@ -639,6 +639,35 @@
     return r.width >= 2 && r.height >= 2 ? lab : null;
   }
 
+  // ---------- Scrolling: the window, or the page's own scroll area ----------
+  // Many sites scroll an inner box (the main column) instead of the window: scrolling the window does
+  // nothing there. Lists that load more items when scrolled near the end need the right one.
+  function mainScroller() {
+    const doc = document.scrollingElement || document.documentElement;
+    if (doc.scrollHeight - innerHeight > 40) return null; // the window scrolls
+    let best = null, bestArea = innerWidth * innerHeight * 0.25;
+    for (const el of document.querySelectorAll('main,[role="main"],div,section,article')) {
+      if (el.scrollHeight - el.clientHeight < 40) continue;
+      const area = el.clientWidth * el.clientHeight;
+      if (area <= bestArea || !/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY)) continue;
+      best = el; bestArea = area;
+    }
+    return best;
+  }
+  /** Scroll position and size, and how many interactive elements the page has (to see what scrolling loaded). */
+  function scrollInfo() {
+    const s = mainScroller();
+    const y = s ? s.scrollTop : scrollY;
+    const max = s ? s.scrollHeight - s.clientHeight : (document.scrollingElement || document.documentElement).scrollHeight - innerHeight;
+    return { y: Math.round(y), max: Math.max(0, Math.round(max)), count: document.querySelectorAll(INTERACTIVE).length };
+  }
+  function scrollPage(action) {
+    const s = mainScroller();
+    const target = s || window;
+    const top = action === 'scroll_to_end' ? 1e9 : (action === 'scroll_down' ? 1 : -1) * (s ? s.clientHeight : innerHeight) * 0.8;
+    if (action === 'scroll_to_end') target.scrollTo({ top, behavior: 'instant' }); else target.scrollBy({ top, behavior: 'instant' });
+  }
+
   function snapshot({ limit = 400 } = {}) {
     const visCache = new Map();
     const out = [];
@@ -710,7 +739,7 @@
       overlay,
       url: location.href,
       title: document.title,
-      scroll: { y: Math.round(scrollY), max: Math.round(document.documentElement.scrollHeight - innerHeight) },
+      scroll: scrollInfo(),
       elements: out,
       notices: visibleNotices()
     };
@@ -732,9 +761,10 @@
     return mark ? { ...res, mark } : res;
   }
   function performAction({ action, id, value }) {
-    if (action === 'scroll_down' || action === 'scroll_up') {
-      window.scrollBy({ top: (action === 'scroll_down' ? 1 : -1) * innerHeight * 0.8, behavior: 'instant' });
-      return { ok: true, message: `scrolled ${action === 'scroll_down' ? 'down' : 'up'}` };
+    if (action === 'scroll_down' || action === 'scroll_up' || action === 'scroll_to_end') {
+      const before = scrollInfo();
+      scrollPage(action);
+      return { ok: true, message: action === 'scroll_up' ? 'scrolled up' : action === 'scroll_down' ? 'scrolled down' : 'scrolled to the end', before };
     }
     const el = elOf(id);
     if (!el) return { ok: false, message: `element ${id} no longer exists` };
@@ -1010,6 +1040,6 @@
   globalThis.__localAI = {
     version: VERSION,
     extract, findAll, moveHit, clearHighlights, highlightQuote, highlightBlocks,
-    listFields, fillFields, listAdders, addItems, snapshot, perform, pageMessages, submitSearch, listItems, blocked
+    listFields, fillFields, listAdders, addItems, snapshot, perform, pageMessages, scrollInfo, scrollPage, submitSearch, listItems, blocked
   };
 })();

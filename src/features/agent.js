@@ -19,7 +19,7 @@ import { styleGuide } from '../writing-style.js';
 import { actionMismatch, describeElement, isRisky } from './elements.js';
 
 const STATUSES = ['pending', 'in_progress', 'done', 'skipped'];
-const ACTIONS = ['click', 'type', 'select', 'check', 'uncheck', 'press_enter', 'scroll_down', 'scroll_up'];
+const ACTIONS = ['click', 'type', 'select', 'check', 'uncheck', 'press_enter', 'scroll_down', 'scroll_up', 'scroll_to_end'];
 
 const oneLine = (v) => String(v || '').replace(/\s+/g, ' ').trim();
 
@@ -88,7 +88,7 @@ const TOOLS = [
   fn('find_elements', 'List the interactive elements (links, buttons, inputs) of the current page that match a description. Use the numbers with act.', {
     what: { type: 'string', description: 'e.g. "search box", "add to list button", "size options"' }
   }),
-  fn('act', 'Do one action on the current page: click, type (replaces the text of an input), select (an option by its text), check, uncheck, press_enter (in a text input), scroll_down, scroll_up.', {
+  fn('act', 'Do one action on the current page: click, type (replaces the text of an input), select (an option by its text), check, uncheck, press_enter (in a text input), scroll_down, scroll_up, scroll_to_end (scrolls to the bottom until a list that loads more items as you scroll has loaded them all).', {
     action: { type: 'string', enum: ACTIONS }, id: { type: 'integer', description: 'element number from find_elements' },
     value: { type: 'string', description: 'text for type/select' }, reason: { type: 'string', description: 'why, in a few words (shown to the user)' }
   }, ['action']),
@@ -411,7 +411,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     actChange = !res.ok ? 'it did not work'
       : after !== before ? 'it opened another page'
       : res.messages?.length ? 'the page showed a message'
-      : ['click', 'press_enter', 'scroll_down', 'scroll_up'].includes(action) ? `it was a ${action.replace('_', ' ')}`
+      : ['click', 'press_enter', 'scroll_down', 'scroll_up', 'scroll_to_end'].includes(action) ? `it was a ${action.replace('_', ' ')}`
       : action === 'select' && el?.tag !== 'select' ? 'it chose an option of a list'
       : action === 'type' && el?.role === 'combobox' ? 'the field may show suggestions'
       : '';
@@ -486,7 +486,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
         const onTop = snap.elements.filter((e) => e.onTop && !list.includes(e)).slice(0, 15);
         if (onTop.length) list = [...onTop, ...list];
         elements = new Map(list.map((e) => [e.id, e]));
-        return { text: `Page: ${snap.title}\nURL: ${snap.url}\nScroll: ${snap.scroll.y}/${snap.scroll.max}px\n` +
+        return { text: `Page: ${snap.title}\nURL: ${snap.url}\nScroll: ${snap.scroll.y}/${snap.scroll.max}px${snap.scroll.max - snap.scroll.y > 20 ? ' (more of the page is below: a long list may load more items when you scroll down; use scroll_to_end to load all of it, or click a "Show more" button, then look again)' : ''}\n` +
           (snap.overlay ? `A dialog is open on top of the page: “${snap.overlay.name}”. It takes the clicks: elements marked (covered) are behind it ` +
             'and cannot be used until it is closed. If it is not part of the task (an offer, an ad, a banner), close it (Close, Dismiss, ×, No thanks); never accept an offer, trial or upgrade.\n' : '') +
           (snap.notices?.length ? `Messages shown on the page now: ${snap.notices.map((m) => `“${m}”`).join(' | ')}\n` : '') +
@@ -801,6 +801,32 @@ export function tabBrowser(tabId, site, { paceMs = 3000, onWait = () => {}, onBl
       if (loads) await pace();
       const res = await handle.call('perform', step);
       if (loads) await settle(); else await handle.waitForSettle();
+      if (res.before) {
+        // Scrolling may load more items (a list that grows near its end): say what it loaded, or that it is the end.
+        const first = res.before;
+        let now = await handle.call('scrollInfo', {});
+        for (let round = 0; step.action === 'scroll_to_end' && round < 12; round++) {
+          let grew = false;
+          for (let w = 0; w < 4 && !grew; w++) { // loading takes a moment
+            await sleep(700, signal);
+            const next = await handle.call('scrollInfo', {});
+            grew = next.max > now.max + 20 || next.count > now.count;
+            now = next;
+          }
+          if (!grew) break;
+          await handle.call('scrollPage', 'scroll_to_end');
+        }
+        if (step.action === 'scroll_down' && now.max - now.y < 20 && now.count === first.count) {
+          await sleep(900, signal); // at the end: give a lazy list a moment to load
+          now = await handle.call('scrollInfo', {});
+        }
+        const added = now.count - first.count;
+        const atEnd = now.max - now.y < 20;
+        res.message += `${now.y === first.y && step.action !== 'scroll_up' ? ' (the page did not move)' : ''}; now at ${now.y} of ${now.max}px` +
+          (added > 0 ? `; ${added} new elements loaded (find_elements shows them)` : '') +
+          (atEnd && step.action !== 'scroll_up' ? (added > 0 ? '' : '; this is the end of the page: nothing more loaded') : '');
+        delete res.before;
+      }
       // What the page said after the action (a toast, an error under a field): it may come a moment later.
       if (res.mark) {
         const read = () => handle.call('pageMessages', { since: res.mark }).catch(() => []);
