@@ -21,7 +21,7 @@ import { WRITING_STYLES, DEFAULT_STYLE, CUSTOM_STYLE_MAX, setWritingStyle } from
 
 const $ = (id) => document.getElementById(id); // global (non-session) elements
 // settings.model is the model of the last choice: new tabs start with it.
-const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 200000, logModelCalls: false };
+const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 200000, logModelCalls: false, maxSteps: 25 };
 
 // The session markup in sidepanel.html is a template: each tab gets a clone, and only the clone of
 // the active tab is attached to the document (so element ids stay unique). Detached clones keep
@@ -56,6 +56,8 @@ async function loadSettings() {
   $('logModelCalls').checked = settings.logModelCalls;
   $('agentPace').value = String(settings.agentPace);
   $('compactAt').value = String(settings.compactAt ?? 200000);
+  settings.maxSteps = Math.min(300, Math.max(3, Math.round(Number(settings.maxSteps)) || 25));
+  for (const s of sessions.values()) s.$('maxSteps').value = String(settings.maxSteps); // tabs opened before the settings loaded
   if (!WRITING_STYLES[settings.writingStyle]) settings.writingStyle = DEFAULT_STYLE;
   $('styleSelect').replaceChildren(...Object.entries(WRITING_STYLES).map(([key, s]) => new Option(s.label, key, false, key === settings.writingStyle)));
   $('styleCustom').value = settings.customStyle;
@@ -181,6 +183,8 @@ class Session {
     this.root.removeAttribute('id');
     const order = this.root.querySelector('.steps-order');
     if (order) order.textContent = document.body.classList.contains('steps-newest') ? '↑↓ Newest first' : '↑↓ Oldest first';
+    const steps = this.root.querySelector('#maxSteps');
+    if (steps) steps.value = String(settings.maxSteps);
     this.attachments = createAttachmentStore();
     this.controller = null;      // AbortController of the running task
     this.searchHandle = null;    // PageHandle of the last search (for prev/next)
@@ -726,10 +730,11 @@ class Session {
     });
   }
   /** The step limit from the panel (3–300); the box shows the value used, so a cap is never silent. */
-  stepLimit() {
+  stepLimit(quiet = false) {
     const box = this.$('maxSteps');
-    const n = Math.min(300, Math.max(3, Math.round(Number(box.value)) || 25));
-    box.value = String(n);
+    const n = Math.min(300, Math.max(3, Math.round(Number(box.value)) || settings.maxSteps || 25));
+    if (!quiet || document.activeElement !== box) box.value = String(n); // not while the user is typing in it
+    if (n !== settings.maxSteps) save('maxSteps', n);
     return n;
   }
   hideConfirm(decision = 'stop') {
@@ -796,7 +801,7 @@ class Session {
         onWait: (ms) => this.setStatus(`Waiting ${Math.ceil(ms / 1000)} s before opening the next page (to keep the load on the site low)…`),
         onBlocked: (reason) => this.askBlocked(reason)
       }),
-      maxSteps: this.stepLimit(),
+      maxSteps: this.stepLimit(), liveMaxSteps: () => this.stepLimit(true),
       confirmAll: this.$('confirmAll').checked,
       compactAt: Number(settings.compactAt) || 0,
       files: { list: () => this.attachments.list(), text: (id) => this.attachments.get(id)?.text || '' },
@@ -1413,6 +1418,14 @@ $('reasoningSelect').addEventListener('change', (e) => {
 $('langSelect').addEventListener('change', (e) => save('lang', e.target.value));
 $('verifyWritten').addEventListener('change', (e) => save('verifyWritten', e.target.checked));
 $('logModelCalls').addEventListener('change', (e) => save('logModelCalls', e.target.checked));
+// The step limit is kept for every tab and after a reload (each tab's panel has its own box).
+// Saved as the user types: the panel may be closed before the box loses focus (when "change" fires).
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'maxSteps') return;
+  const n = Math.round(Number(e.target.value));
+  if (n >= 3 && n <= 300 && n !== settings.maxSteps) save('maxSteps', n);
+}, true);
+document.addEventListener('change', (e) => { if (e.target.id === 'maxSteps') shown?.stepLimit(); }, true);
 $('agentPace').addEventListener('change', (e) => save('agentPace', Number(e.target.value) || 3));
 $('compactAt').addEventListener('change', (e) => {
   // A whole number of tokens; empty or negative turns compaction off, tiny values would compact on every step.

@@ -215,7 +215,7 @@ function relevantElements(elements, what, limit = 40) {
 /**
  * @param files  the files the user attached: { list() → [{id, name, chars}], text(id) → string }
  */
-export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto', maxSteps = 25, confirmAll = false, signal, onEvent = () => {}, memory = null, followUp = '', page = null, excerpts = '', compactAt = 0, files = null }) {
+export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto', maxSteps = 25, liveMaxSteps = null, confirmAll = false, signal, onEvent = () => {}, memory = null, followUp = '', page = null, excerpts = '', compactAt = 0, files = null }) {
   if (memory) ({ goal, reference } = memory);
   const pageNote = (p) => (p?.url ? ` (the page open in the tab: ${p.title ? `"${p.title}" ` : ''}${p.url})` : '');
   // The attached files, named with the request (and again with each follow-up, as they may have changed): read with read_file.
@@ -548,6 +548,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     const n = Math.max(0, Math.min(100, Math.round(Number(granted) || 0)));
     if (n) {
       maxSteps += n;
+      extraSteps += n;
       onEvent({ type: 'step', kind: 'user', text: `You allowed ${n} more steps.` });
       return n;
     }
@@ -569,8 +570,11 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   let moreStepsRefused = false;
   let finishGrace = false;
   let currentStep = 0;
+  let extraSteps = 0; // steps the user allowed on request, on top of the limit in the panel
   for (let step = 1; step <= maxSteps; step++) {
     currentStep = step;
+    // The user may change the step limit in the panel while the agent works: it counts from the next step.
+    if (liveMaxSteps && !wrapUp) maxSteps = Math.max(step, (Number(liveMaxSteps()) || maxSteps - extraSteps) + extraSteps);
     await ui.waitIfPaused?.(); // the user paused: wait here, between steps
     if (signal?.aborted) throw new DOMException('Stopped', 'AbortError');
     for (const m of ui.takeMessages()) {
