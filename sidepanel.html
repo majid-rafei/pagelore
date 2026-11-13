@@ -70,9 +70,9 @@
       </label>
       <p class="hint">The agent opens pages at most this often, to keep the load on websites low.</p>
       <label class="inline">Compact its memory above
-        <input id="compactAt" class="wide-number" type="number" min="0" step="1000" placeholder="60000" /> tokens
+        <input id="compactAt" class="wide-number" type="number" min="0" step="1000" placeholder="100000" /> tokens
       </label>
-      <p class="hint">In a long task or chat the agent's requests grow (its log, notes and the earlier conversation). When a request would be larger than this, one extra request first summarizes the older part, so the next requests are smaller and cheaper. The latest steps, the plan and the saved results are kept as they are. 0 turns it off; smaller values (for example 16000) make long tasks cheaper but summarize sooner.</p>
+      <p class="hint">The agent keeps everything it read in the conversation, so it need not read a page again and the server can cache it. When a request would be larger than this, the oldest long results (page text, lists) are shortened to one line; if that is not enough, one extra request summarizes the older part. The latest steps, the plan and the saved results are kept as they are. 0 turns it off; smaller values (for example 30000) make long tasks cheaper but shorten sooner. Models on this computer use at most 32000.</p>
       </section>
       <section class="card api-models">
         <h3>Models</h3>

@@ -7,9 +7,10 @@
 // The conversation is a standard chat transcript, in order: the request, the agent's steps (tool calls
 // and results), messages the user sent while it worked, its answers and the follow-ups, each added once.
 // Each request is: instructions and request | (compacted summary) | transcript | state (the current
-// request, plan, results, page, steps left). Context stays small: large results (page text, element
-// lists) are shown in full for one step, then replaced by a one-line summary, so the model writes down
-// what matters with write_notes / save_result; when it still grows, the older part is compacted.
+// request, plan, results, page, steps left). Tool results stay as they were sent (servers cache the
+// growing conversation, and the agent need not read a page again); when it grows larger than the limit,
+// the oldest large results are replaced by a one-line summary, and then, if needed, the older part is
+// summarized. The agent writes down what matters with write_notes / save_result.
 // Page content is untrusted. Risky actions (submit, pay, delete, send…) always need the user's OK.
 
 import { chat, chatWithTools } from '../llm.js';
@@ -44,7 +45,7 @@ function closePlan(plan) {
   return changed;
 }
 
-/** One line for the log of earlier steps (the full call and result are shown for one step only). */
+/** One line for an earlier step whose large result was removed (or for a summary of the steps). */
 function logEntry(call, out) {
   const a = call.args || {};
   const q = (v, n) => `"${String(v || '').replace(/\s+/g, ' ').trim().slice(0, n)}"`;
@@ -229,8 +230,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   // The conversation after the request, in the order it happened, as in any chat: the agent's steps
   // (its tool calls and their results), messages the user sent while it worked, its answers and the
   // user's follow-ups. Everything is added once, at its place; the newest message is the last one.
-  // Large tool results (page text, element lists) are shown in full for one step, then replaced in
-  // place by a one-line summary (the notes the agent wrote keep what it needs).
+  // Large tool results (page text, element lists) stay until the conversation grows too large; then the
+  // oldest are replaced in place by a one-line summary (the notes the agent wrote keep what it needs).
   let transcript, summary, summaryNotes;
   if (memory?.transcript) ({ transcript, summary = '', summaryNotes = [] } = structuredClone(memory));
   else if (memory) {
@@ -263,7 +264,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     'Never write a URL from memory: save_result and your answer accept only links that appeared in what you saw.\n' +
     '- The conversation is in order: the request, your steps, messages the user sent while you worked, your answers and the user\'s follow-ups. ' +
     'Work on the user\'s newest message ("Current request" at the end). Earlier messages were already handled: do not answer them, report on them or apologize for them again.\n' +
-    '- Large tool results (page content, search results, element lists, file text) are shown in full for one step only; after that only a one-line summary of the call stays. ' +
+    '- Tool results stay in the conversation: use what you already read instead of reading it again. When the conversation grows too large, ' +
+    'the oldest large results (page content, search results, element lists, file text) are replaced by a one-line summary. ' +
     'So record what matters with write_notes right away (copy the links you will need: never guess a URL), ' +
     'save findings with save_result, and skip pages with nothing useful. Follow the plan; do not repeat work you already did.\n' +
     '- If the request lacks something that decides the result (for example budget, size or purpose when choosing a product), ask at the start instead of guessing. ' +
@@ -300,7 +302,6 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   if (excerpts && page?.url) markRead(page.url);
   const knownLink = (u) => knownIn(urls.seen, u) || state.results.some((r) => r.url && normUrl(r.url) === normUrl(u));
   let finishChecked = false; // the answer's links and results were checked once (the agent could fix them)
-  let shortenNext = [];    // tool results of the last step shown in full: { message, short } (shortened after the next request)
   let newMessages = 0;     // messages the user sent while the agent worked, not seen by the model yet
   let nudge = '';          // a reminder for the next request
 
@@ -323,8 +324,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   // ----- Compaction: when a request would be larger than compactAt tokens, the older part of the
   // transcript and the notes are summarized by one extra request. The last steps are kept as they are.
   const KEEP_STEPS = 8;
-  const FOLLOW_UP_KEEP = 3;           // steps kept in full when a follow-up starts
-  const FOLLOW_UP_COMPACT = 10000;    // tokens of earlier work above which a follow-up compacts it
+  const BIG = 1500;           // characters: a tool result this long is shortened when the conversation is too large
   const sizeOf = (messages) => JSON.stringify(messages).length;
   let tokensPerChar = 0.3;    // estimate, corrected with the token counts the server reports
   let compactedAt = -99;      // step of the last compaction (not again within 3 steps)
@@ -340,6 +340,25 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     if (m.role === 'user') return `User: ${m.content}`;
     return [m.content && `Agent: ${m.content}`, ...(m.tool_calls || []).map((c) => `  - ${c.function?.name} ${clip(c.function?.arguments, 1300)}`)].filter(Boolean).join('\n');
   };
+  /** Replaces the oldest large tool results (not those of the last step) by a one-line summary, until the
+   *  conversation is about `target` characters. Returns how many were shortened. */
+  function trimOld(size, target, step) {
+    let last = 0;
+    for (let i = transcript.length - 1; i >= 0; i--) if (transcript[i].role === 'assistant') { last = i; break; }
+    const calls = new Map();
+    for (const m of transcript) for (const c of m.tool_calls || []) calls.set(c.id, c);
+    let n = 0;
+    for (let i = 0; i < last && size > target; i++) {
+      const m = transcript[i];
+      if (m.role !== 'tool' || String(m.content).length <= BIG) continue;
+      const c = calls.get(m.tool_call_id);
+      let args = {}; try { args = JSON.parse(c?.function?.arguments || '{}'); } catch { /* shown as is */ }
+      const short = `${logEntry({ name: c?.function?.name, args }, { text: m.content, raw: true })} (full result removed at step ${stepBase + step} to keep the conversation small: your notes have what you recorded)`;
+      size -= JSON.stringify(m.content).length - JSON.stringify(short).length;
+      m.content = short; n++;
+    }
+    return n;
+  }
   async function compact(step, keep) {
     compactedAt = step;
     const { cut } = oldParts(keep);
@@ -564,6 +583,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   const openPlan = () => state.plan.filter((s) => s.status === 'pending' || s.status === 'in_progress').map((s) => s.title).join('; ').slice(0, 300);
 
   const seen = new Map(); // tool call + page → first step, to point out repeats
+  const seenResult = new Map(); // the same key → { message, content }: the first result, while it is in the conversation in full
   const typed = new Map(); // page + field → { count, step, turns }: how often the agent typed into it
   let userTurns = 0; // messages and answers from the user so far (a new one allows retyping a field)
   let allowAll = false; // the user allowed the actions that need confirmation, for the rest of this request
@@ -598,31 +618,27 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
     const pageText = step === 1 && excerpts ? `--- Excerpts of the open page relevant to the request (shown for this step only; cite them like [2]) ---\n${excerpts}\n\n` : '';
     let stateMsg = { role: 'user', content: `${nudge}${pageText}${await stateText(maxSteps - step + 1)}` };
     let messages = [...head, ...transcript, stateMsg];
-    // A follow-up starts with the earlier work compacted (only its last steps in full), when that is large:
-    // otherwise all of it would be sent again with every step of the new work.
-    if (followUp && step === 1 && compactAt > 0 && oldParts(FOLLOW_UP_KEEP).chars * tokensPerChar > Math.min(FOLLOW_UP_COMPACT, compactAt / 4)) {
+    // Larger than the limit: first the oldest large tool results are shortened (no extra request), down to
+    // well below the limit, so this happens rarely and the cached start stays the same in between. If that
+    // is not enough, the older part of the conversation is summarized (one extra request).
+    if (compactAt > 0 && sizeOf(messages) * tokensPerChar > compactAt) {
       const before = Math.round(sizeOf(messages) * tokensPerChar);
-      await compact(step, FOLLOW_UP_KEEP);
-      stateMsg = { role: 'user', content: `${nudge}${pageText}${await stateText(maxSteps - step + 1)}` };
+      const n = trimOld(sizeOf(messages), (compactAt * 0.6) / tokensPerChar, step);
       messages = [...head, ...transcript, stateMsg];
-      onEvent({ type: 'step', kind: 'thought', text: `Compacted the earlier work before the follow-up: about ${before.toLocaleString('en')} → ${Math.round(sizeOf(messages) * tokensPerChar).toLocaleString('en')} tokens per request.` });
-    }
-    // Too large: compact the older memory first, when it is a good part of the request.
-    if (compactAt > 0 && step - compactedAt >= 3 && sizeOf(messages) * tokensPerChar > compactAt && oldParts().chars > sizeOf(messages) * 0.25) {
-      const before = Math.round(sizeOf(messages) * tokensPerChar);
-      await compact(step);
-      stateMsg = { role: 'user', content: `${nudge}${pageText}${await stateText(maxSteps - step + 1)}` };
-      messages = [...head, ...transcript, stateMsg];
-      onEvent({ type: 'step', kind: 'thought', text: `Compacted its memory: about ${before.toLocaleString('en')} → ${Math.round(sizeOf(messages) * tokensPerChar).toLocaleString('en')} tokens per request.` });
+      const how = n ? [`shortened ${n} long earlier result${n > 1 ? 's' : ''}`] : [];
+      if (sizeOf(messages) * tokensPerChar > compactAt * 0.8 && step - compactedAt >= 3 && oldParts().chars > sizeOf(messages) * 0.25) {
+        await compact(step);
+        stateMsg = { role: 'user', content: `${nudge}${pageText}${await stateText(maxSteps - step + 1)}` };
+        messages = [...head, ...transcript, stateMsg];
+        how.push('summarized the older conversation');
+      }
+      if (how.length) onEvent({ type: 'step', kind: 'thought', text: `Compacted its memory (${how.join(', ')}): about ${before.toLocaleString('en')} → ${Math.round(sizeOf(messages) * tokensPerChar).toLocaleString('en')} tokens per request.` });
     }
     nudge = '';
     const res = await chatWithTools(messages, !last ? TOOLS : finishGrace ? JUST_FINISH : wrapUp || moreStepsRefused ? FINISH_ONLY : LAST_STEP_TOOLS, { signal, maxTokens: 2000 });
     if (res.usage?.prompt_tokens > 0) tokensPerChar = res.usage.prompt_tokens / sizeOf(messages);
     newMessages = 0;
 
-    // The large results of the step before were shown in full once: from now on, their one-line summary.
-    for (const { message, short } of shortenNext) message.content = short;
-    shortenNext = [];
     const assistantMsg = { ...res.message };
     transcript.push(assistantMsg);
     const thought = res.content?.trim();
@@ -669,7 +685,7 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
       if (out.raw || ['open_url', 'act', 'ask_user'].includes(call.name)) see(out.text);
       // Opening the same URL, reading the same page or making the same search twice gives nothing new:
       // say so, in the result and in the log. An action can change the page, so reads count again after it.
-      if (call.name === 'act') for (const k of seen.keys()) if (!k.startsWith('open ') && !k.startsWith('file ')) seen.delete(k);
+      if (call.name === 'act') for (const k of seen.keys()) if (!k.startsWith('open ') && !k.startsWith('file ')) { seen.delete(k); seenResult.delete(k); }
       let first = 0;
       const key = call.name === 'open_url' ? `open ${call.args?.url}`
         : call.name === 'read_file' && out.raw ? `file ${out.text.split('\n')[0]}`
@@ -679,14 +695,17 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
         first = seen.get(key) || 0;
         if (!first) seen.set(key, stepBase + step);
       }
-      const repeat = first ? ` (repeat of step ${first})` : '';
-      const text = !first ? out.text : call.name === 'read_file'
+      // The same large result is still above in full: point to it instead of sending it again.
+      const earlier = first && out.raw ? seenResult.get(key) : null;
+      const text = !first ? out.text : earlier && earlier.message.content === earlier.content && earlier.content === out.text
+        ? `Same result as at step ${first}: it is above in this conversation, unchanged. Use it from there; do not repeat this call.`
+        : call.name === 'read_file'
         ? `${out.text}\n\nYou already read this at step ${first}. Write what you need from it with write_notes now, then use it. ` +
           'If what you are looking for is not in it, do not read it again: tell the user what is missing with ask_user.'
         : `${out.text}\n\nYou already did this at step ${first}; your notes have what it gave. Do not repeat it: continue with something new, or finish.`;
-      const message = { role: 'tool', tool_call_id: call.id, content: out.raw ? `${text}\n\n(Shown for this step only: note what you need now.)` : text };
+      const message = { role: 'tool', tool_call_id: call.id, content: text };
       transcript.push(message);
-      if (out.raw) shortenNext.push({ message, short: `${logEntry(call, out)}${repeat} (shown in full at step ${stepBase + step}, removed since: your notes have what you recorded)` });
+      if (key && !first && out.raw) seenResult.set(key, { message, content: text });
     }
     const answer = String(finish?.args?.answer || '').trim();
     if (answer) {
@@ -724,19 +743,17 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   function done(answer, steps, plain = false) {
     answer = cleanLinks(answer);
     if (closePlan(state.plan)) onEvent({ type: 'plan', plan: state.plan });
-    for (const { message, short } of shortenNext) message.content = short;
     // A plain-text answer is already the last message; otherwise the answer is added as the agent's reply.
     if (plain && transcript.at(-1)?.role === 'assistant') transcript.at(-1).content = answer;
     else transcript.push({ role: 'assistant', content: answer });
     return { answer, ...state, steps, memory: memoryOf(stepBase + steps) };
   }
-  /** What the next message continues from. While the agent works (interrupted = true): a copy, with the
-   *  last step's large results already shortened and a note that the work stopped there. */
+  /** What the next message continues from. While the agent works (interrupted = true): a copy, with
+   *  a note that the work stopped there. */
   function memoryOf(totalSteps, interrupted = false) {
     let t = transcript;
     if (interrupted) {
-      const shortOf = new Map(shortenNext.map(({ message, short }) => [message, short]));
-      t = structuredClone(transcript.map((m) => (shortOf.has(m) ? { ...m, content: shortOf.get(m) } : m)));
+      t = structuredClone(transcript);
       t.push({ role: 'assistant', content: '(My work stopped here before I finished: the panel was closed or reloaded, or the user stopped me. ' +
         'My plan, notes and results so far are kept. If the user asks me to continue, go on with the plan from here.)' });
     }

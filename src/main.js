@@ -21,7 +21,8 @@ import { WRITING_STYLES, DEFAULT_STYLE, CUSTOM_STYLE_MAX, setWritingStyle } from
 
 const $ = (id) => document.getElementById(id); // global (non-session) elements
 // settings.model is the model of the last choice: new tabs start with it.
-const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 60000, logModelCalls: false, maxSteps: 25 };
+const LOCAL_COMPACT_AT = 32000; // the memory limit for models on this computer (their context is often small)
+const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 100000, logModelCalls: false, maxSteps: 25 };
 
 // The session markup in sidepanel.html is a template: each tab gets a clone, and only the clone of
 // the active tab is attached to the document (so element ids stay unique). Detached clones keep
@@ -55,7 +56,7 @@ async function loadSettings() {
   $('verifyWritten').checked = settings.verifyWritten;
   $('logModelCalls').checked = settings.logModelCalls;
   $('agentPace').value = String(settings.agentPace);
-  $('compactAt').value = String(settings.compactAt ?? 60000);
+  $('compactAt').value = String(settings.compactAt ?? 100000);
   settings.maxSteps = Math.min(300, Math.max(3, Math.round(Number(settings.maxSteps)) || 25));
   for (const s of sessions.values()) s.$('maxSteps').value = String(settings.maxSteps); // tabs opened before the settings loaded
   if (!WRITING_STYLES[settings.writingStyle]) settings.writingStyle = DEFAULT_STYLE;
@@ -982,7 +983,8 @@ class Session {
       }),
       maxSteps: this.stepLimit(), liveMaxSteps: () => this.stepLimit(true),
       confirmAll: this.$('confirmAll').checked,
-      compactAt: Number(settings.compactAt) || 0,
+      // Models on this computer often have a small context window: their limit is at most 32,000 tokens.
+      compactAt: modelSpec(this.model)?.local ? Math.min(Number(settings.compactAt) || LOCAL_COMPACT_AT, LOCAL_COMPACT_AT) : Number(settings.compactAt) || 0,
       files: { list: () => this.attachments.list(), text: (id) => this.attachments.get(id)?.text || '' },
       ui: {
         confirm: (c) => this.askConfirm(c),
