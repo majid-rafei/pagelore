@@ -27,3 +27,6 @@ Thumbs.db
 
 # Python cache
 __pycache__/
+
+# Test copy of the built extension (tests/ui/browser.mjs)
+tests/ui/.ext/

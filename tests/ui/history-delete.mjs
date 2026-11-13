@@ -1,0 +1,28 @@
+// UI test: deleting a history entry asks first; Cancel keeps it, OK deletes it.
+import http from 'node:http';
+import { launch } from './browser.mjs';
+const server = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<html><head><title>Shop</title></head><body><p>The Breeze 14 is loud. The Aurora 14 is quiet.</p></body></html>'); });
+await new Promise((r) => server.listen(8771, r));
+const ctx = await launch();
+let [sw] = ctx.serviceWorkers(); if (!sw) sw = await ctx.waitForEvent('serviceworker');
+const page = await ctx.newPage(); await page.goto('http://127.0.0.1:8771/page');
+const panel = await ctx.newPage(); panel.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
+await panel.goto(`chrome-extension://${sw.url().split('/')[2]}/sidepanel.html`);
+await page.bringToFront(); await panel.waitForTimeout(1500);
+let fails = 0; const ok = (c, m, extra = '') => { console.log(c ? 'PASS' : 'FAIL', m, c ? '' : extra); if (!c) fails++; };
+await panel.click('.tabs button[data-tab="search"]');
+await panel.fill('#searchQuery', 'Breeze'); await panel.press('#searchQuery', 'Enter'); await panel.waitForTimeout(800);
+await panel.click('#historyBox > summary'); await panel.waitForTimeout(300);
+const count = () => panel.$$eval('#historyList > li', (l) => l.length);
+const before = await count();
+ok(before === 1, `one entry (${before})`);
+let msg = '';
+panel.once('dialog', (d) => { msg = d.message(); d.dismiss(); });
+await panel.click('#historyList > li .text-button:text("Delete")'); await panel.waitForTimeout(400);
+ok(/Delete this entry/.test(msg) && /Breeze/.test(msg), 'asks, naming the entry', msg);
+ok(await count() === 1, 'Cancel keeps it');
+panel.once('dialog', (d) => d.accept());
+await panel.click('#historyList > li .text-button:text("Delete")'); await panel.waitForTimeout(400);
+ok(await count() === 0, 'OK deletes it');
+await ctx.close(); server.close();
+console.log(fails ? `${fails} failed` : 'all passed');

@@ -18,13 +18,16 @@
     "build": "vite build",
     "watch": "vite build --watch",
     "package": "node scripts/notices.mjs && vite build && node scripts/package.mjs",
-    "icons": "python3 scripts/make-icons.py"
+    "icons": "python3 scripts/make-icons.py",
+    "test": "node tests/run.mjs agent",
+    "test:ui": "vite build && node tests/run.mjs ui"
   },
   "dependencies": {
     "fflate": "0.8.3",
     "pdfjs-dist": "6.4.299"
   },
   "devDependencies": {
-    "vite": "^7.1.0"
+    "vite": "^7.1.0",
+    "playwright-core": "1.48.2"
   }
 }

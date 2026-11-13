@@ -112,6 +112,15 @@ npm run build
 
 The first time you use a page, Chrome may ask for site access (the **Allow access** banner). The extension requests `<all_urls>` as an *optional* permission, only when needed. Without it, it works on the tab where you clicked the extension icon (`activeTab`).
 
+### Tests
+
+```bash
+npm test             # the agent with a scripted fake model: transcript, batched actions, compaction
+npm run test:ui      # builds, then drives the side panel in headless Chromium with a fake API server
+```
+
+The UI tests need Chromium for `playwright-core` (`npx playwright-core install chromium`) or `CHROME_PATH` set to a Chrome or Chromium binary. No real model or API key is used.
+
 ## Models
 
 The extension contains no model. Settings → **Models** → **Add a model** adds any model served by an OpenAI-compatible API (`…/v1/chat/completions`): on this computer with Ollama or LM Studio, or in the cloud (OpenAI, OpenRouter, Requesty, DeepInfra, Vultr…). Enter a name, the API URL (for example `https://router.requesty.ai/v1`), the API key (not needed on this computer) and the model name; **List models** fetches the server's model list, **Test** sends one short request.
@@ -193,6 +202,9 @@ src/
   page.js              tab binding and calls into content.js
   text.js              Unicode normalization, output-language choice, chunking, BM25, tolerant JSON parsing
   features/            summarize.js, passages.js (BM25 passage retrieval, cited sources), search.js, form.js, elements.js (element descriptions, risky-action checks), agent.js (tool-calling agent)
+tests/
+  agent/               the agent loop with a scripted fake model (npm test)
+  ui/                  the side panel in headless Chromium (npm run test:ui); run.mjs runs either set
 scripts/
   package.mjs          store zip; notices.mjs third-party licenses; make-icons.py icons
 docs/
