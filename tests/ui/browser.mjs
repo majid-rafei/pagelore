@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 const dist = new URL('../../dist/', import.meta.url).pathname;
 const ext = new URL('./.ext/', import.meta.url).pathname;
 
-export async function launch() {
+export async function launch({ args = [] } = {}) {
   if (!existsSync(`${dist}manifest.json`)) throw new Error('dist/ is missing: run `npm run build` first.');
   cpSync(dist, ext, { recursive: true, force: true });
   const manifest = JSON.parse(readFileSync(`${ext}manifest.json`, 'utf8'));
@@ -15,6 +15,6 @@ export async function launch() {
   writeFileSync(`${ext}manifest.json`, JSON.stringify(manifest, null, 2));
   return chromium.launchPersistentContext('', {
     executablePath: process.env.CHROME_PATH || chromium.executablePath(), headless: true,
-    args: ['--headless=new', `--disable-extensions-except=${ext}`, `--load-extension=${ext}`]
+    args: ['--headless=new', `--disable-extensions-except=${ext}`, `--load-extension=${ext}`, ...args]
   });
 }

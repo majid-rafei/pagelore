@@ -41,7 +41,7 @@
 
 ## Quick start
 
-1. Download `pagelore-<version>.zip` from [Releases](https://github.com/majid-rafei/pagelore/releases/latest) and unzip it, or build it yourself with `npm install && npm run build` (the output is `dist/`). Then load the folder in `chrome://extensions` (Developer mode → **Load unpacked**).
+1. Install Pagelore from the [Chrome Web Store](https://chromewebstore.google.com/detail/pagelore-%E2%80%93-ai-side-panel/cnpfoellofoklclohodcnkebkidbfnek). Or download `pagelore-<version>.zip` from [Releases](https://github.com/majid-rafei/pagelore/releases/latest) and unzip it, or build it yourself with `npm install && npm run build` (the output is `dist/`). Then load the folder in `chrome://extensions` (Developer mode → **Load unpacked**).
 2. Start Ollama and pull a model: `ollama pull qwen3:8b`.
 3. Click the extension icon on any page, open ⚙ Settings → **Models** → **Add a model** → **Ollama**, pick the model, **Test**, **Save**.
 
@@ -200,6 +200,7 @@ src/
   attachments.js       attached files as a shared, retrievable context source
   documents.js         local PDF (pdf.js) / DOCX (fflate) / text readers
   page.js              tab binding and calls into content.js
+  protected-sites.js   sites the extension never reads or acts on (built-in list and the user's domains)
   text.js              Unicode normalization, output-language choice, chunking, BM25, tolerant JSON parsing
   features/            summarize.js, passages.js (BM25 passage retrieval, cited sources), search.js, form.js, elements.js (element descriptions, risky-action checks), agent.js (tool-calling agent)
 tests/
@@ -218,6 +219,7 @@ docs/
 - Page text is treated as untrusted. The model never produces code that gets executed. It can only choose from a fixed set of actions (click / type / select / check / press Enter / scroll) on elements that `content.js` listed, and the agent can only open pages of the site it started on unless you allow otherwise.
 - Password, file, hidden and payment-card fields are never read or written.
 - Form filling never submits. Risky actions always require confirmation.
+- **Protected sites.** Some services forbid extensions and other automated means to read ("scrape") or act on their pages while you are signed in, and restrict accounts for it; LinkedIn [says so explicitly](https://www.linkedin.com/help/linkedin/answer/a1340567). On these sites Pagelore does not read, fill in, click or scroll the page, and the agent does not open them; the panel shows a warning instead. Built in (cannot be changed): LinkedIn, Facebook and Messenger, Instagram, Threads, WhatsApp, X (Twitter), TikTok, Reddit, Pinterest, Amazon, Indeed, Glassdoor and Upwork, in all their country domains. You can add your own in ⚙ Settings → **Protected sites**; a domain covers its subdomains. To use text from these sites, copy it into the chat yourself.
 - Small models make mistakes. Review the form values and the action steps.
 
 ## Limitations

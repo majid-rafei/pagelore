@@ -66,6 +66,7 @@ button.flash-fail { color: #b42318; }
 .settings summary, .profile summary { font-size: 11px; color: var(--muted); cursor: pointer; margin-top: 6px; }
 .settings > * + * , .profile > * + * { margin-top: 8px; }
 .banner { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 10px; padding: 8px 10px; }
+.protected-list { font-size: 12px; margin: 4px 0 8px; line-height: 1.5; }
 .tabs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; background: var(--secondary); padding: 3px; border-radius: 10px; }
 .tabs button { background: transparent; color: var(--secondary-text); padding: 7px 2px; font-size: 11px; }
 .tabs button.active { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.12); }

@@ -2,6 +2,7 @@ import './style.css';
 import { formatModelLog } from './model-log.js';
 import { firstModel, bindModel, bindReasoning, modelSpec, modelChoices, setApiModels, onUsage, onModelCall } from './llm.js';
 import { loadApiModels, saveApiModels, onApiModelsChange, newApiModelId, normalizeBaseUrl, hostOf, requestHostAccess, listRemoteModels, remoteChat, REASONING_LEVELS, reasoningIgnored } from './api-models.js';
+import { BUILT_IN, protectedSite, setUserProtected } from './protected-sites.js';
 import { PageHandle, PageAccessError, BrowserPageError, hasAllSitesAccess, requestAllSitesAccess } from './page.js';
 import { summarizePage, followUpSummary } from './features/summarize.js';
 import { relevantPassages, citedSources } from './features/passages.js';
@@ -22,7 +23,7 @@ import { WRITING_STYLES, DEFAULT_STYLE, CUSTOM_STYLE_MAX, setWritingStyle } from
 const $ = (id) => document.getElementById(id); // global (non-session) elements
 // settings.model is the model of the last choice: new tabs start with it.
 const LOCAL_COMPACT_AT = 32000; // the memory limit for models on this computer (their context is often small)
-const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 100000, logModelCalls: false, maxSteps: 25 };
+const settings = { model: null, lang: 'auto', profile: '', summaryLength: 'medium', confirmAll: false, writingStyle: DEFAULT_STYLE, customStyle: '', verifyWritten: true, agentPace: 3, reasoning: 'default', compactAt: 100000, logModelCalls: false, maxSteps: 25, protectedSites: [] };
 
 // The session markup in sidepanel.html is a template: each tab gets a clone, and only the clone of
 // the active tab is attached to the document (so element ids stay unique). Detached clones keep
@@ -57,6 +58,9 @@ async function loadSettings() {
   $('logModelCalls').checked = settings.logModelCalls;
   $('agentPace').value = String(settings.agentPace);
   $('compactAt').value = String(settings.compactAt ?? 100000);
+  $('protectedSites').value = setUserProtected(settings.protectedSites).join('\n');
+  $('builtInProtected').textContent = BUILT_IN.map((x) => x.name).join(' · ');
+  renderProtectedBanner();
   settings.maxSteps = Math.min(300, Math.max(3, Math.round(Number(settings.maxSteps)) || 25));
   for (const s of sessions.values()) s.$('maxSteps').value = String(settings.maxSteps); // tabs opened before the settings loaded
   if (!WRITING_STYLES[settings.writingStyle]) settings.writingStyle = DEFAULT_STYLE;
@@ -1335,7 +1339,7 @@ class Session {
       // Host access for the whole site (subdomains included) lets the agent move between its pages.
       // Permission requests need the click (user gesture), so it starts here, before anything async.
       this.accessRequest = null;
-      if (modelSpec(this.model)?.api && /^https?:/.test(this.url)) {
+      if (modelSpec(this.model)?.api && /^https?:/.test(this.url) && !protectedSite(this.url)) {
         this.accessRequest = chrome.permissions.request({ origins: [`*://*.${siteOf(new URL(this.url).hostname)}/*`] });
       }
       this.run(this.doRunTask);
@@ -1501,7 +1505,19 @@ function show(session) {
   renderGlobalBusy();
 }
 
+/** The warning above the tabs while the shown tab is on a protected site (see protected-sites.js). */
+function renderProtectedBanner() {
+  const site = shown && protectedSite(shown.url);
+  $('protectedBanner').classList.toggle('hidden', !site);
+  if (site) {
+    $('protectedBanner').textContent = site.builtIn
+      ? `${site.name} forbids extensions to read or automate its pages, and accounts can be restricted for it. Pagelore does not read or act on this page; copy the text you need into the chat yourself.`
+      : `${site.name} is in your protected sites: Pagelore does not read or act on this page.`;
+  }
+}
+
 function renderSessionInfo() {
+  renderProtectedBanner();
   const info = $('sessionInfo');
   if (!shown) { info.replaceChildren(); return; }
   const title = document.createElement('span');
@@ -1566,7 +1582,7 @@ chrome.tabs.onActivated.addListener(({ windowId }) => {
 chrome.windows.onFocusChanged.addListener(() => { if (!pinnedTabId && panelWindowId == null) syncToActiveTab(); });
 chrome.tabs.onUpdated.addListener((tabId, change) => {
   const s = sessions.get(tabId);
-  if (s && change.url) { s.url = change.url; if (s === shown && s.pages.length) renderSessionInfo(); }
+  if (s && change.url) { s.url = change.url; if (s === shown) renderSessionInfo(); }
   if (s && change.title) { s.title = change.title; if (s === shown) renderSessionInfo(); }
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -1611,6 +1627,12 @@ document.addEventListener('input', (e) => {
 }, true);
 document.addEventListener('change', (e) => { if (e.target.id === 'maxSteps') shown?.stepLimit(); }, true);
 $('agentPace').addEventListener('change', (e) => save('agentPace', Number(e.target.value) || 3));
+$('protectedSites').addEventListener('change', (e) => {
+  const list = setUserProtected(e.target.value.split(/[\s,]+/));
+  e.target.value = list.join('\n');
+  save('protectedSites', list);
+  renderProtectedBanner();
+});
 $('compactAt').addEventListener('change', (e) => {
   // A whole number of tokens; empty or negative turns compaction off, tiny values would compact on every step.
   const n = Math.max(0, Math.round(Number(e.target.value) || 0));

@@ -15,6 +15,7 @@
 
 import { chat, chatWithTools } from '../llm.js';
 import { PageHandle } from '../page.js';
+import { ProtectedSiteError, assertNotProtected, protectedSite } from '../protected-sites.js';
 import { bm25Rank, normalize, outputLanguage } from '../text.js';
 import { styleGuide } from '../writing-style.js';
 import { actionMismatch, describeElement, isRisky } from './elements.js';
@@ -527,6 +528,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
       case 'open_url': {
         const url = String(a.url || '').trim();
         if (!/^https?:\/\//i.test(url)) return { text: 'Error: only http(s) URLs can be opened.' };
+        const shielded = protectedSite(url);
+        if (shielded) return { text: `Error: ${new ProtectedSiteError(shielded).message} Do not try to open ${shielded.name} again in this task: tell the user, who can open it and copy the text you need into the chat.` };
         // Started on a browser page (such as the New Tab page): the first site opened is the task's site.
         if (!browser.site && /^https?:/i.test(url)) browser.site = siteOf(new URL(url).hostname);
         if (!sameSite(url, browser.site)) {
@@ -681,6 +684,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
             wrapUp = true;
             onEvent({ type: 'step', kind: 'error', text: 'The site blocked automated use: finishing with what was found.' });
             out = { text: `${e.message} Do not open more pages. Call finish now with what is in your notes and results, and say that the site stopped the search (the user can solve the check in the tab and run the task again).` };
+          } else if (e instanceof ProtectedSiteError) {
+            out = { text: `Error: ${e.message} Do not read, click or open anything on ${e.site.name} again in this task. Tell the user what you need: they can copy it into the chat, or open another site.` };
           } else out = { text: `Error: ${e?.message || e}` };
         }
       }
@@ -825,6 +830,7 @@ export function tabBrowser(tabId, site, { paceMs = 3000, onWait = () => {}, onBl
     }
   }
   async function navigate(to) {
+    assertNotProtected(to);
     await pace();
     await chrome.tabs.update(tabId, { url: to });
     await settle();

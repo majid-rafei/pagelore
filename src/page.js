@@ -1,4 +1,5 @@
 // Bridge between the side panel and the in-page agent (public/content.js).
+import { assertNotProtected } from './protected-sites.js';
 
 export class PageAccessError extends Error {
   constructor(message) { super(message); this.name = 'PageAccessError'; }
@@ -61,6 +62,9 @@ export class PageHandle {
   }
 
   async ensureInjected() {
+    // Every read of and action on the page passes here: none on a protected site (see protected-sites.js).
+    const tab = await chrome.tabs.get(this.tabId).catch(() => null);
+    for (const url of [tab?.url, tab?.pendingUrl]) if (url) assertNotProtected(url);
     try {
       const [probe] = await chrome.scripting.executeScript({
         target: { tabId: this.tabId },
