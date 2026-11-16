@@ -532,11 +532,16 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
         if (shielded) return { text: `Error: ${new ProtectedSiteError(shielded).message} Do not try to open ${shielded.name} again in this task: tell the user, who can open it and copy the text you need into the chat.` };
         // Started on a browser page (such as the New Tab page): the first site opened is the task's site.
         if (!browser.site && /^https?:/i.test(url)) browser.site = siteOf(new URL(url).hostname);
-        if (!sameSite(url, browser.site)) {
+        // Without asking: the start site, the site the tab is on now, and the sites the user allowed in this request.
+        const here = await browser.url().catch(() => '');
+        const hereSite = /^https?:/i.test(here) ? siteOf(new URL(here).hostname) : '';
+        if (!anySite && ![browser.site, hereSite, ...allowedSites].some((s) => s && sameSite(url, s))) {
           if (!(await browser.canLeaveSite())) return { text: `Error: the extension may only open pages of ${browser.site}. Ask the user if another site is needed.` };
-          const ok = await ui.confirm({ text: `Leave ${browser.site} and open ${url}`, reason: a.reason || 'the agent wants to open another website', risky: true });
+          const ok = await ui.confirm({ text: hereSite ? `Leave ${hereSite} and open ${url}` : `Open ${url}`, reason: a.reason || 'the agent wants to open another website', risky: true });
           if (ok === 'stop') throw new DOMException('Stopped', 'AbortError');
-          if (ok !== 'run') return { text: 'The user declined to open this site.' };
+          if (ok === 'all') { anySite = true; onEvent({ type: 'step', kind: 'user', text: 'You allowed opening other sites for the rest of this request.' }); }
+          else if (ok === 'run') allowedSites.add(siteOf(new URL(url).hostname));
+          else return { text: 'The user declined to open this site.' };
         }
         onEvent({ type: 'step', text: `Opening ${url.replace(/^https?:\/\/(www\.)?/, '').slice(0, 80)}` });
         await browser.navigate(url);
@@ -593,6 +598,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
   const typed = new Map(); // page + field → { count, step, turns }: how often the agent typed into it
   let userTurns = 0; // messages and answers from the user so far (a new one allows retyping a field)
   let allowAll = false; // the user allowed the actions that need confirmation, for the rest of this request
+  const allowedSites = new Set(); // other sites the user allowed the agent to open in this request
+  let anySite = false;            // … or all of them ("Allow for this request")
   let draftAnswer = ''; // the longest text the model wrote without calling finish: the answer if it never does
   let wrapUp = false; // the site blocked us, or the user refused more steps: finish with what was found
   let moreStepsRefused = false;
