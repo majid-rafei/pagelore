@@ -218,7 +218,8 @@ function relevantElements(elements, what, limit = 40) {
  */
 export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto', maxSteps = 25, liveMaxSteps = null, confirmAll = false, signal, onEvent = () => {}, memory = null, followUp = '', page = null, excerpts = '', compactAt = 0, files = null }) {
   if (memory) ({ goal, reference } = memory);
-  const pageNote = (p) => (p?.url ? ` (the page open in the tab: ${p.title ? `"${p.title}" ` : ''}${p.url})` : '');
+  const pageNote = (p) => (p?.url ? ` (the page open in the tab: ${p.title ? `"${p.title}" ` : ''}${p.url})`
+    : p ? ' (the tab shows no web page: open the pages you need with open_url)' : '');
   // The attached files, named with the request (and again with each follow-up, as they may have changed): read with read_file.
   const attached = files?.list() || [];
   const filesNow = attached.length
@@ -526,6 +527,8 @@ export async function runAgent({ goal, browser, ui, reference = '', lang = 'auto
       case 'open_url': {
         const url = String(a.url || '').trim();
         if (!/^https?:\/\//i.test(url)) return { text: 'Error: only http(s) URLs can be opened.' };
+        // Started on a browser page (such as the New Tab page): the first site opened is the task's site.
+        if (!browser.site && /^https?:/i.test(url)) browser.site = siteOf(new URL(url).hostname);
         if (!sameSite(url, browser.site)) {
           if (!(await browser.canLeaveSite())) return { text: `Error: the extension may only open pages of ${browser.site}. Ask the user if another site is needed.` };
           const ok = await ui.confirm({ text: `Leave ${browser.site} and open ${url}`, reason: a.reason || 'the agent wants to open another website', risky: true });

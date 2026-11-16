@@ -3,6 +3,12 @@
 export class PageAccessError extends Error {
   constructor(message) { super(message); this.name = 'PageAccessError'; }
 }
+/** The tab shows a browser page (New Tab, chrome://, the Web Store): no extension may read it. */
+export class BrowserPageError extends Error {
+  constructor(message = PROTECTED) { super(message); this.name = 'BrowserPageError'; }
+}
+const PROTECTED = 'This page cannot be read (browser pages such as chrome:// or the New Tab page are protected). Open a normal web page (http/https) first.';
+export const hasAllSitesAccess = () => chrome.permissions.contains({ origins: ['<all_urls>'] });
 
 const HIGHLIGHT_CSS = `
 ::highlight(local-ai-hit){background-color:rgba(255,214,0,.55);color:inherit}
@@ -16,7 +22,7 @@ function assertReadable(tab) {
     throw new PageAccessError('The extension has no access to this tab yet. Click the extension icon while this tab is open, or click “Allow access” to use the assistant on any tab.');
   }
   if (!/^(https?|file):/.test(url) || /^https:\/\/chrome(webstore)?\.google\.com\/webstore/.test(url)) {
-    throw new Error('This page cannot be read (browser pages such as chrome:// or the New Tab page are protected). Open a normal web page (http/https) first.');
+    throw new BrowserPageError();
   }
   return tab;
 }
@@ -48,6 +54,9 @@ export class PageHandle {
   static async forTab(tabId) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error('This tab was closed.');
+    // With access to all sites a hidden URL is a browser page (such as the New Tab page), not missing access:
+    // asking for access again would not help.
+    if (!(tab.url || tab.pendingUrl) && await hasAllSitesAccess()) throw new BrowserPageError();
     return new PageHandle(assertReadable(tab).id);
   }
 

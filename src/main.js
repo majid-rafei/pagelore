@@ -2,7 +2,7 @@ import './style.css';
 import { formatModelLog } from './model-log.js';
 import { firstModel, bindModel, bindReasoning, modelSpec, modelChoices, setApiModels, onUsage, onModelCall } from './llm.js';
 import { loadApiModels, saveApiModels, onApiModelsChange, newApiModelId, normalizeBaseUrl, hostOf, requestHostAccess, listRemoteModels, remoteChat, REASONING_LEVELS, reasoningIgnored } from './api-models.js';
-import { PageHandle, PageAccessError, requestAllSitesAccess } from './page.js';
+import { PageHandle, PageAccessError, BrowserPageError, hasAllSitesAccess, requestAllSitesAccess } from './page.js';
 import { summarizePage, followUpSummary } from './features/summarize.js';
 import { relevantPassages, citedSources } from './features/passages.js';
 import { smartSearch } from './features/search.js';
@@ -931,7 +931,13 @@ class Session {
     const text = this.$('goal').value.trim();
     if (!text) { this.setStatus(this.agentChat ? 'Type your message.' : 'Ask about this page, or say what should be done.'); return; }
     const chat = this.agentChat;
-    const handle = await this.page();
+    const handle = await this.page().catch(async (e) => {
+      if (!(e instanceof BrowserPageError)) throw e;
+      // A browser page (such as the New Tab page) cannot be read, but the agent can start there and open
+      // the pages it needs, which takes access to all sites.
+      if (!(await hasAllSitesAccess())) throw new PageAccessError('This tab shows a browser page (such as the New Tab page), which cannot be read. To start here, the agent needs access to all sites so it can open the pages it needs: click “Allow access”. Or open a web page first.');
+      return new PageHandle(this.tabId);
+    });
     if (chat) this.archiveAgentTurn();
     else this.resetAgentUI();
     this.$('agentPlan').classList.remove('ended'); // the plan is live while the agent works
@@ -975,8 +981,8 @@ class Session {
     const res = await runAgent({
       goal: text, reference: [this.reference(memory?.goal || text), before].filter(Boolean).join('\n\n'), signal, lang: settings.lang,
       memory, followUp: memory ? text : '', excerpts,
-      page: { url: tab.url, title: tab.title },
-      browser: tabBrowser(this.tabId, siteOf(new URL(tab.url).hostname), {
+      page: { url: tab.url || '', title: tab.title || '' },
+      browser: tabBrowser(this.tabId, /^https?:/.test(tab.url || '') ? siteOf(new URL(tab.url).hostname) : '', {
         signal, paceMs: (Number(settings.agentPace) || 3) * 1000,
         onWait: (ms) => this.setStatus(`Waiting ${Math.ceil(ms / 1000)} s before opening the next page (to keep the load on the site low)…`),
         onBlocked: (reason) => this.askBlocked(reason)
