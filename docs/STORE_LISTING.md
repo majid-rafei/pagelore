@@ -31,6 +31,9 @@ WHAT IT DOES
 • Attach files – add PDF, Word (.docx) or text files and ask questions about them or use them to fill forms.
 • One session per tab, and a history of your chats on your device.
 
+PROTECTED SITES
+Some services forbid extensions to read or automate their pages while you are signed in, and can restrict accounts that do it. On these sites (LinkedIn, Facebook, Instagram, Threads, WhatsApp, X, TikTok, Reddit, Pinterest, Amazon, Indeed, Glassdoor and Upwork) Pagelore does not read or act on the page, and its agent does not open them. You can add more sites in Settings. To use text from these sites, copy it into the chat yourself.
+
 YOUR MODEL, YOUR CHOICE
 The extension contains no AI model. In Settings → Models, click "Ollama" or "LM Studio" to use a model on your computer, or enter the URL and key of an online provider (OpenAI, OpenRouter, Requesty and others). Page content is read only when you start a feature and is sent only to the model you chose.
 
